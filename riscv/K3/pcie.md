@@ -13,7 +13,7 @@
 | pcie0_rc | 0x80000000 | Gen3 | 8 (按 PHY 拆) | phy0 (0x81d00000) + phy1 (0x81e00000) | pcie0 perst pad79 / clkreq pad81, func5 |
 | pcie1_rc | 0x80400000 | Gen3 | - | phy1 | pcie1 perst pad113 / wake 114 / clkreq 115, func5 |
 | pcie2_rc | 0x80800000 | Gen3 | - | phy2 (0x81f00000) + phy3 (0x82000000) | pcie2 perst pad58 / wake 59 / clkreq 60, func4 |
-| pcie3_rc | 0x80c00000 | Gen3 | 1 | phy4 (0x82100000 上邻) | (M.2/WiFi 方式用板级组) |
+| pcie3_rc | 0x80c00000 | Gen3 | 1 | phy4 (0x82100000 上邻) | pcie3_0_cfg (pad3/4/5 func4); pcie3_1_cfg (pad105/106/107 func5); pcie3_2_cfg (pad124/125/126 func3) 三选一 |
 | pcie4_rc | 0x81000000 | Gen3 | 1 | phy5 | pcie4 perst pad76 / wake 80 / clkreq 78, func5 |
 
 - RC compatible = "spacemit,k1-pcie", 驱动
@@ -33,7 +33,7 @@
 | 场景 (itx-k3l 宏组合) | pcie0_rc | pcie1_rc | pcie2_rc |
 |---|---|---|---|
 | FF_PCIEX16_SLOT (x4 槽) | phy0+phy1, 4-lane | - | - |
-| FF_PCIEX16_SLOT + FF_SATA_SSSD | phy0, 2-lane (x2 槽) | phy1, 2-lane (M.2 SSD) | - |
+| FF_PCIEX16_SLOT + FF_SATA_SSD | phy0, 2-lane (x2 槽) | phy1, 2-lane (SATA 桥) | - |
 | aibox-k3 (FF_GMAC0 系) | - | - | phy2+phy3, 2-lane |
 
 　　AIBOX-PRO 的组合: FF_PCIE1 → pcie0_rc x4 (phy0+phy1);
@@ -273,10 +273,11 @@ CONFIG_PCI_MSI=y                 # PCIE_SPACEMIT 依赖
 
 ### 4.4 方式四: 多控制器并存 (itx-k3l)
 
-　　M.2 SSD 走 pcie1_rc (2-lane), 槽位让出 phy1 时 pcie0_rc 降 2-lane:
+　　FF_SATA_SSD = **PCIe 转 SATA 桥** (详 sata.md) 挂 pcie1_rc
+(2-lane), 槽位让出 phy1 时 pcie0_rc 降 2-lane:
 
 ```dts
-/* M.2 SSD (FF_SATA_SSD 命名, 实为 NVMe) */
+/* SATA 桥上行口 (FF_SATA_SSD, 桥芯片无 dts 节点) */
 &phy1 { status = "okay"; };
 
 &pcie1_rc {

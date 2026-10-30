@@ -70,8 +70,19 @@ adma3 (RCPU DMA, 0xC0883C00) → ri2s3 (RCPU I2S, 0xc0883D00)
 |---|---|---|
 | DP 差分对 (MAIN_LINK 2/4 lane) | dp1 (0xcac88000 对应模拟 pad) | 专用 pad, 不进 pinctrl |
 | AUX+ / AUX- | dp1 | 专用 pad |
-| HPD (热插拔检测) | **pad 72, func 4** | dp1_3_cfg 组 (基座预置), 必配否则不识别插拔 |
+| HPD (热插拔检测) | 6 组 pad 可选 (下表), 必配否则不识别插拔 | 按走线引脚选组 |
 | DP 供电 | 板级 (GPIO85, aibox-k3 用于 lt2404 power) | 高有效 |
+
+　　dp1 hpd 有 6 组基座组 (k3-pinctrl.dtsi), 按你板 HPD 走线选其一:
+
+| 组名 | pad/func | 采用板 |
+|---|---|---|
+| dp1_0_cfg | pad10 func6 | - |
+| dp1_1_cfg | pad24 func6 | deepcomputing / k3-pico |
+| dp1_2_cfg | pad69 func4 | - |
+| dp1_3_cfg | pad72 func4 | aibox-k3 / AIBOX-PRO |
+| **dp1_4_cfg** | **pad98 func5, 3.3V 域** | itx-k3l |
+| dp1_5_cfg | pad125 func4 | - |
 
 　　aibox-k3 的 DP 经 **LT2404 桥接芯片** (Lontium, I2C3 地址 0x29):
 
@@ -114,7 +125,7 @@ CONFIG_SOUND=y / CONFIG_SND_SOC=y  # DP 音频
 
 &dp1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&dp1_3_cfg>;      /* 基座组: pad72 func4, dp1 hpd */
+	pinctrl-0 = <&dp1_3_cfg>;      /* aibox-k3 选择: pad72 func4; 6 组对照见 2 节 */
 	status = "okay";
 };
 
@@ -166,7 +177,7 @@ I2C3 作控制通道:
 
 &dp1 {
 	pinctrl-names = "default";
-	pinctrl-0 = <&dp1_3_cfg>;
+	pinctrl-0 = <&dp1_4_cfg>;      /* itx 选择: pad98 func5, 3.3V 域; 对照见 2 节 */
 	status = "okay";
 };
 
@@ -247,7 +258,7 @@ speaker-test -D plughw:1 -c 2 -t sine   # 显示器出正弦音 (卡号按实际
 
 # 5. 排查顺序
 #    a) 连接器不存在           -> include k3-dp1.dtsi? DRM_SPACEMIT/INNO_DP?
-#    b) status 恒 unknown      -> HPD pad72 func4 (dp1_3_cfg)
+#    b) status 恒 unknown      -> HPD 组 (6 选 1, 2 节表) func 是否生效
 #    c) 点亮但花屏             -> dpu_resv1 引用/分辨率带宽
 #    d) 桥接无输出             -> i2cdetect -y 3 (0x29) / GPIO85/74 时序
 ```
