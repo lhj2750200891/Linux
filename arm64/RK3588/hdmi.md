@@ -1,5 +1,143 @@
 # HDMI
 
+## 6. RK3588 8K HDMI 热插拔与分辨率自适应
+
+本节记录内核提交 1a010ddb2ec5、5206e70845ac 和 5abc48cf5361 对 RK3588 HDMI0 8K 热插拔、FRL 重训练和默认分辨率选择的修复。
+
+### 6.1 8K 资源规划：HDMI0 只连接 VP0
+
+RK3588 8K 使用 VOP2 的 VP0+VP1 splice 模式，但 splice 由 VOP2 驱动内部完成。设备树不能同时把 HDMI0 绑定到 VP0 和 VP1，否则热插拔重绑定时可能把 8K 路径错误当成第二个 CRTC。
+
+在 rk3588-firefly-common.dtsi 中删除或不要加入：
+
+```dts
+&hdmi0_in_vp1 {
+	status = "okay";
+};
+```
+
+HDMI0 只保留 VP0：
+
+```dts
+&hdmi0_in_vp0 {
+	status = "okay";
+};
+
+&route_hdmi0 {
+	status = "okay";
+	connect = <&vp0_out_hdmi0>;
+};
+```
+
+### 6.2 快速拔插黑屏：重新触发 FRL 训练
+
+8K@60 通常使用 HDMI 2.1 FRL。拔出 HDMI 后 sink 断电会使 FRL 链路失效；快速插回时桌面 compositor 可能没有观察到一次完整 disconnect/connect 状态变化，因此不会重新发起 modeset。仅依赖 modeset queue FRL 训练会导致立即插回黑屏。
+
+在 drivers/gpu/drm/bridge/synopsys/dw-hdmi-qp.c 的 dw_hdmi_qp_handle_hpd() 中，HDMI 2.1 高 TMDS/FRL 分支应在管线仍运行时重新 queue flt_work：
+
+```c
+if (hdmi->hdmi_data.video_mode.mtmdsclock > 600000000) {
+	if (enable && !hdmi->disabled && hdmi->dclk_en) {
+		struct dw_hdmi_link_config *link_cfg = NULL;
+		struct hdmi_data_info *data = &hdmi->hdmi_data;
+
+		if (hdmi->plat_data->get_link_cfg)
+			link_cfg = hdmi->plat_data->get_link_cfg(data);
+
+		if (link_cfg && link_cfg->frl_mode)
+			queue_work(hdmi->workqueue, &hdmi->flt_work);
+	}
+	goto out;
+}
+```
+
+### 6.3 8K 默认分辨率自适应
+
+部分 8K 电视 EDID 把 4K 模式标为 preferred。GNOME/mutter 在没有用户 monitors.xml 时会选择 preferred，结果默认只显示 4K。
+
+在 dw-hdmi-qp.c 的 dw_hdmi_connector_get_modes() 完成模式解析后，把 preferred 标记移动到像素数最多的模式。决胜顺序必须是：
+
+```text
+像素总数 -> 像素时钟 -> 刷新率
+```
+
+不能只比较像素时钟，因为 7680x4320@50 和 @60 可能具有相同像素时钟；只比较 clock 会错误选择 50Hz。
+
+核心比较逻辑：
+
+```c
+if (!best ||
+    mode->hdisplay * mode->vdisplay >
+    best->hdisplay * best->vdisplay ||
+    (mode->hdisplay * mode->vdisplay ==
+     best->hdisplay * best->vdisplay &&
+     (mode->clock > best->clock ||
+      (mode->clock == best->clock &&
+       drm_mode_vrefresh(mode) >
+       drm_mode_vrefresh(best)))))
+	best = mode;
+```
+
+### 6.4 相关提交
+
+```text
+1a010ddb2ec5 dts: rk3588-firefly-common.dtsi: fix support HDMI 8K display
+5206e70845ac drivers: gpu/drm/bridge/synopsys/dw-hdmi-qp.c: fix 8K display re-train FRL
+5abc48cf5361 drivers: gpu/drm/bridge/synopsys/dw-hdmi-qp.c: fix auto-select 8K mode on 8K TV
+ec64ab5489ba drivers: gpu/drm/bridge/synopsys/dw-hdmi-qp.c: fix HDMI 8K 60HZ display on 8K TV
+```
+
+从初始 SDK 恢复时可以直接：
+
+```bash
+cd /path/to/rk3588_6.12.69_sdk/kernel-6.12
+git cherry-pick 1a010ddb2ec5 5206e70845ac 5abc48cf5361 ec64ab5489ba
+```
+
+### 6.5 验证
+
+```bash
+cat /sys/class/drm/card*-HDMI-A-1/status
+cat /sys/class/drm/card*-HDMI-A-1/modes
+dmesg | grep -i -E 'hdmi|frl|flt|training|hotplug'
+```
+
+8K 热插拔验证：
+
+1. 接入 8K 电视，确认自动模式选择 7680x4320；
+2. 拔出 HDMI；
+3. 立即重新插入；
+4. 连续快速插拔多次；
+5. 检查日志是否出现 FRL training/ flt success；
+6. 确认不需要重启即可恢复画面。
+
+如果桌面已经保存了旧显示配置：
+
+```bash
+rm -f ~/.config/monitors.xml
+```
+
+然后重启图形会话，再验证默认分辨率自适应。
+
+常见日志：
+
+| 日志 | 含义 |
+|---|---|
+| stop poll flt_update | 拔出，FRL 训练退出 |
+| Training finish, go to ltsp | FRL 训练完成 |
+| flt success | FRL 链路成功 |
+| final tmdsclk 显示负数 | 可能是 int 打印溢出，不一定是功能错误 |
+| failed to read max link rate | 需结合 HPD 状态判断；未连接时可为正常噪声 |
+
+### 6.6 资源冲突提醒
+
+```text
+HDMI0 <-> eDP0：hdptxphy0 互斥
+HDMI1 <-> eDP1：hdptxphy1 互斥
+HDMI0 8K：设备树只连接 VP0，VP0/VP1 splice 由 VOP2 内部完成
+```
+
+
 　　HDMI TX (单口/双口) 与 HDMI RX 输入的设备树配置。参考板 aio-3588q / itx-3588j。
 
 ## 1. RK3588 HDMI 架构

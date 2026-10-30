@@ -1166,3 +1166,133 @@ I2C 0x2d 显示 `UU`，DSI 状态为 `connected`，模式包含 `800x1280`，并
 | `Driver 'LT9211C' is already registered` | 删除内核重复 `subsys_initcall()` |
 | route 关闭正常、route 打开黑屏 | U-Boot 镜像未更新或初始化时序错误 |
 | DSI connected 但 LVDS 黑屏 | Chip ID、PCR/PLL、LVDS 映射、屏供电和背光 |
+
+## 10. 最终摄像头适配与实机验证（2026-10-30）
+
+本节记录当前 6.12 DTS 的最终摄像头资源映射和已经在 AIO-3588SG 实机上验证的配置。
+
+### 10.1 最终可用映射
+
+```text
+CAMERA1:
+    I2C1-M4 -> XC7160 @ 0x1b
+      -> csi2_dcphy0 / MIPI_DPHY0_RX
+      -> mipi0_csi2 -> rkcif_mipi_lvds
+
+CAMERA2:
+    I2C0-M2 -> XC7160 @ 0x1b
+      -> csi2_dcphy1 / MIPI_DPHY1_RX
+      -> mipi1_csi2 -> rkcif_mipi_lvds1
+```
+
+这是根据 5.10 SDK 和 6.12 实机 CSI 中断结果确定的最终映射，不能只根据 `mipi0`/`mipi1` 名称猜测物理接口。
+
+### 10.2 只修改 DTS 宏切换配置
+
+DSI1 VP3 屏幕 + CAMERA1：
+
+```dts
+#define FF_DSI1_VP3
+#define FF_MIPI_CSI2_CAMERA1_XC7160
+
+//#define FF_MIPI_CSI2_CAMERA2_XC7160
+//#define FF_MIPI_CSI2_IMX415
+```
+
+CAMERA2 单摄：
+
+```dts
+#define FF_MIPI_CSI2_CAMERA2_XC7160
+
+//#define FF_DSI1_VP3
+//#define FF_MIPI_CSI2_CAMERA1_XC7160
+//#define FF_MIPI_CSI2_IMX415
+```
+
+双摄：
+
+```dts
+#define FF_MIPI_CSI2_CAMERA1_XC7160
+#define FF_MIPI_CSI2_CAMERA2_XC7160
+
+//#define FF_DSI1_VP3
+//#define FF_MIPI_CSI2_IMX415
+```
+
+IMX415：
+
+```dts
+#define FF_MIPI_CSI2_IMX415
+
+//#define FF_MIPI_CSI2_CAMERA1_XC7160
+//#define FF_MIPI_CSI2_CAMERA2_XC7160
+```
+
+### 10.3 `bp.dtsi` 自动互斥处理
+
+当前 `rk3588-firefly-aio-3588sg-bp.dtsi` 会根据摄像头宏自动关闭冲突外设，不再要求手工修改多个节点：
+
+| 启用宏 | 自动关闭资源 |
+|---|---|
+| `FF_MIPI_CSI2_CAMERA1_XC7160` | DSI0/route、UART4、PCIe2 1-lane、Wi-Fi/蓝牙复用 |
+| `FF_MIPI_CSI2_CAMERA2_XC7160` | DSI1/route |
+| 双摄 | DSI0/route、DSI1/route，以及 CAMERA1 的 UART4/PCIe/Wi-Fi 冲突资源 |
+| XC7160 + IMX415 | IMX415 的 CSI/ISP 链路 |
+
+CAMERA1 使用 I2C1-M4，而 UART4-M0 也使用 GPIO1_PD2/PD3；CAMERA1 的 camera clock 还使用 GPIO1_PD7，而 PCIe2 1-lane/Wi-Fi 电源也可能使用该引脚。因此 CAMERA1 模式下自动关闭 UART4、PCIe2 和 Wi-Fi 是必要的。
+
+### 10.4 实机验证
+
+先检查驱动和媒体链路：
+
+```bash
+dmesg | grep -i -E 'xc7160|csi2|dphy|rkcif'
+```
+
+列出视频节点：
+
+```bash
+for x in /sys/class/video4linux/video*; do
+	[ -e "$x" ] || continue
+	echo -n "$(basename "$x"): "
+	cat "$x/name"
+done
+```
+
+正常采集节点通常名为 `stream_cif_mipi_id*`；`rkcif_tools_id*` 和 `rkcif_scale_ch*` 不应作为第一选择。
+
+以 CAMERA1 的 `/dev/video0` 为例，显示到 DSI/LVDS 桌面：
+
+```bash
+sudo -u firefly env \
+XDG_RUNTIME_DIR=/run/user/1000 \
+WAYLAND_DISPLAY=wayland-0 \
+gst-launch-1.0 -e \
+v4l2src device=/dev/video0 io-mode=2 \
+! video/x-raw,format=NV12,width=1920,height=1080,framerate=30/1 \
+! videoconvert \
+! waylandsink fullscreen=true sync=false
+```
+
+确认确实收到帧：
+
+```bash
+sudo -u firefly env \
+XDG_RUNTIME_DIR=/run/user/1000 \
+WAYLAND_DISPLAY=wayland-0 \
+gst-launch-1.0 -e \
+v4l2src device=/dev/video0 io-mode=2 \
+! video/x-raw,format=NV12,width=1920,height=1080,framerate=30/1 \
+! fpsdisplaysink video-sink=waylandsink text-overlay=false sync=false
+```
+
+### 10.5 故障判据
+
+| 现象 | 结论 |
+|---|---|
+| `/dev/i2c-1` 不存在 | I2C1-M4 没有成功申请，优先检查 UART4 是否关闭 |
+| `pin gpio1-26 already requested by feb70000.serial` | UART4 与 I2C1-M4 冲突 |
+| 有 XC7160 I2C 节点但没有 `/dev/video*` | 传感器没有完成 probe 或 CIF 没有绑定 sensor |
+| 只有 `stream ON`、没有帧率 | MIPI 没有收到有效视频包，检查 DPHY、lane、排线和电源 |
+| 使用 `/dev/video10` 无图像 | 通常是 `rkcif_tools_id*`，不是正常采集节点 |
+| IMX415 的 `/dev/video11` 正常、XC7160 不正常 | 两者媒体链路和节点编号不同，必须按 video 节点名称选择 |
