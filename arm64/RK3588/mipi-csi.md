@@ -355,6 +355,22 @@ bp.dtsi 无条件包含 dcphy-cam), Firefly 原厂未解决, 属遗留互斥。
 ## 6. 验证测试
 
 ```
+# IMX415
+grep -H '' /sys/class/video4linux/video*/name   # 查找节点,选MAINPATH的
+
+sudo -u firefly env \
+  XDG_RUNTIME_DIR=/run/user/1000 \
+  WAYLAND_DISPLAY=wayland-0 \
+  gst-launch-1.0 \
+  v4l2src device=/dev/video31 io-mode=2 \
+  ! video/x-raw,format=NV12,width=1920,height=1080,framerate=30/1 \
+  ! videoconvert \
+  ! waylandsink sync=false
+```
+
+
+
+```
 # 枚举 media 设备
 ls /dev/media*
 media-ctl -p -d /dev/media0     # 打印整条链路, 应看到
@@ -384,4 +400,112 @@ dmesg | grep -i -E "imx415|rkcif|rkisp|csi2|dphy"
 # 4. mipi err cnt 报错: MIPI 信号完整性问题, 检查 lane 数配置与硬件走线
 # 5. 画面偏色: IQ 文件不匹配, 检查 camera-module-name/lens-name 是否与
 #    /etc/iqfiles 一致
+```
+
+## 7. 实战: AIO-3588L CSI0/CSI1 双 IMX415 (6.12, 板级验证)
+
+　　定制板两路 MIPI CSI 座, 均接 IMX415 (8M, 3840x2160)。顶层宏相互
+独立, 可同时开:
+
+```
+#define FF_MIPI_CSI0_IMX415
+#define FF_MIPI_CSI1_IMX415
+```
+
+### 7.1 两路硬件连接
+
+| 资源 | CSI0 (IMX415-0) | CSI1 (IMX415-1) |
+|---|---|---|
+| I2C | i2c3 (i2c3m0_xfer), 0x37 | i2c8 (i2c8m4_xfer), 0x37 |
+| MCLK | CLK_MIPI_CAMARAOUT_M1 (mipim0_camera1_clk = **GPIO1_B6**) | CLK_MIPI_CAMARAOUT_M3 (mipim0_camera3_clk = GPIO1_D6) |
+| reset | GPIO2_B5 (低有效) | GPIO2_C5 (低有效) |
+| DPHY | csi2_dphy0 (dphy0) | csi2_dphy1_hw + csi2_dphy3 (dphy3) |
+| CSI2 / CIF | mipi2_csi2 → rkcif_mipi_lvds2 | mipi4_csi2 → rkcif_mipi_lvds4 |
+| ISP | rkisp0_vir0 (rkisp0) | rkisp1_vir0 (rkisp1) |
+
+　　注意 M1 时钟有两组复用: 本板 (与 6.1 官方 AIO-3588L 一致) 用
+**mipim0_camera1_clk (GPIO1_B6)**, 不是第 5 节表里的 mipim1_camera1_clk
+(GPIO3_A6)。MCLK 引脚配错 → sensor 无时钟, probe 读 ID 得 000000。
+
+### 7.2 数据链路 (dts 全链)
+
+```
+CSI0 (rk3588-firefly-aio-3588l-mipi-csi0-imx415.dtsi):
+  imx415-0 (i2c3 0x37)
+    ====> mipidphy0_in_ucam1 (csi2_dphy0, data-lanes <1 2 3 4>)
+    ----> csidphy0_out ----> mipi2_csi2 ----> cif_mipi2_in0 (rkcif_mipi_lvds2)
+    ----> rkcif_mipi_lvds2_sditf ----> isp0_vir0 (rkisp0 + isp0_mmu)
+
+CSI1 (rk3588-firefly-aio-3588l-mipi-csi1-imx415.dtsi):
+  imx415-1 (i2c8 0x37)
+    ====> mipidphy3_in_ucam1 (csi2_dphy1_hw + csi2_dphy3, data-lanes <1 2 3 4>)
+    ----> csidphy3_out ----> mipi4_csi2 ----> cif_mipi4_in0 (rkcif_mipi_lvds4)
+    ----> rkcif_mipi_lvds4_sditf ----> isp1_vir0 (rkisp1 + isp1_mmu)
+```
+
+　　要点:
+- CSI1 的 dphy 是 dcphy1 的 dphy3 组, sensor 端点经 mipidphy3_in_ucam1
+  挂 csi2_dphy3, 与 CSI0 的 csi2_dphy0 结构不同, 抄链时别混
+- compatible = "sony,imx415" → drivers/media/i2c/imx415.c,
+  CONFIG_VIDEO_IMX415=y
+- **i2c8 为共享总线**: CSI1 sensor@0x37 与 LCD0 座触摸 goodix@0x14 共存
+  (地址不同不冲突); i2cdetect 看到 0x37 显示 UU 属正常 (内核已占用)
+
+### 7.3 板上实测结论
+
+　　CSI1 (i2c8): probe 成功, 全链可用:
+
+```
+imx415 8-0037: Detected imx415 id 0000e0
+rockchip-csi2-dphy csi2-dphy3: dphy3 matches m01_b_imx415 8-0037
+# 取流时: s_stream: 1.  3864x2192, hdr: 0, bpp: 10
+# AE 曝光/增益自动收敛, 正常关流 (s_stream: 0) —— 出图链路完整
+```
+
+　　CSI0 (i2c3): probe 失败:
+
+```
+imx415 3-0037: Unexpected sensor id(000000), ret(-5)
+```
+
+　　id 读到全 0 + ret(-5) (EIO) = I2C 完全无应答, 典型原因是**座上没插
+模组**或模组供电/接线问题, 不是时序/驱动问题 (驱动问题通常是 probe
+defer 或读到部分字节)。CSI0 待硬件确认后重测。
+
+　　板上 media/video 节点分布 (双摄配置、CSI0 sensor 缺席时):
+
+| 设备 | 归属 |
+|---|---|
+| /dev/media1 | rkcif-mipi-lvds4 (CSI1 cif) |
+| /dev/media3 | rkisp (isp vir0, CSI1 链) |
+| /dev/media0 | 缺失 (CSI0 链 sensor 未 probe, media 未注册) |
+| video11~14 | stream_cif_mipi_id0~3 |
+| video15~18 | rkcif_scale_ch0~3 |
+| 共 21 个 video 节点 | cif + isp + scale 混编, 用 name 确认 |
+
+### 7.4 验证测试
+
+```
+# sensor probe 与 dphy 匹配
+dmesg | grep -iE "imx415|dphy.*match"
+# 正常: Detected imx415 id 0000e0 + dphyN matches
+
+# 拓扑
+ls /dev/media*
+media-ctl -p -d /dev/media1               # CSI1 cif 链
+media-ctl -p -d /dev/media3               # isp 链
+
+# 找 ISP MAINPATH 节点抓 NV12 (节点号以板上 name 为准)
+grep -H '' /sys/class/video4linux/video*/name
+v4l2-ctl -d /dev/videoXX --set-fmt-video=width=3840,height=2160,pixelformat=NV12 \
+         --stream-mmap --stream-count=1 --stream-to=/tmp/f.raw
+
+# 常见问题:
+# 1. sensor id 000000 ret(-5): I2C 无应答 —— 没插模组/供电/接线, 先查硬件
+# 2. 模组在位但读不到 ID: 量 MCLK (GPIO1_B6 / GPIO1_D6) 有无时钟,
+#    核对 reset 极性 (本板均低有效)
+# 3. media 设备缺失: 链上 sensor 没 probe 成功, rkcif/isp 不注册 media
+# 4. CSI1 无图 CSI0 有图: 两链 dphy 组不同 (7.2), 别把 dphy0 的链抄给 dphy3
+# 5. i2c8 上 0x14/0x37 有一方失联: 确认 DSI 屏座触摸 (0x14) 与 CSI1
+#    sensor (0x37) 的供电独立, 一方坏不会拉死总线
 ```

@@ -742,8 +742,11 @@ LVDS 屏 (800x1280, 经 LT9211D 桥):
 
 ```
 # 查看连接器
-ls /sys/class/drm/
-# 应看到 card?-DSI-1 (dsi1) / card0-DSI-2 (dsi0)
+ls /sys/class/drm/   # 应看到 card?-DSI-1 (dsi1) / card0-DSI-2 (dsi0)
+for c in /sys/class/drm/card0-*; do echo "$c: $(cat $c/status 2>/dev/null)"; done   # 查看连接状态
+# 播放视频主屏幕
+gst-play-1.0 xxx.mp4   # 没有声音
+sudo -u firefly XDG_RUNTIME_DIR=/run/user/1000 gst-play-1.0 4K_H264_bird.mp4
 
 cat /sys/class/drm/card*-DSI-1/status    # enabled
 cat /sys/class/drm/card*-DSI-1/modes     # 应列出设备树 timing 的分辨率
@@ -772,4 +775,192 @@ cat /proc/bus/input/devices | grep -A4 goodix
 # 5. LVDS 屏无图: 先量 LT9211D 电源/复位脚, i2cdetect 看 0x2d 在不在,
 #    桥没起来 MIPI 侧自然无输出
 # 6. 触摸无反应: cfg-group2 与屏不匹配或 INT 极性错
+```
+
+## 7. 实战: AIO-3588L 双 MIPI 屏座 (6.12, 板级验证)
+
+　　本节为定制板 (Firefly AIO-3588L 样机, 6.12 SDK, 自写板级 dts) 双 MIPI
+屏座的完整适配记录。方案与第 2 节 (SG 板) 同源但引脚不同, 另有两个本板
+特有的坑: 座号与控制器编号交叉、U-Boot 在位检测误禁。
+
+### 7.1 座号 - 控制器 - 文件名 三方对照 (本板最大坑)
+
+　　顶层 rk3588-firefly-aio-3588l.dts 用互斥宏选择屏幕方案:
+
+```
+//#define FF_MIPI_DSI0_VP3
+#define FF_MIPI_DSI1_VP3          // 当前: LCD0 座工作配方
+
+#if defined(FF_MIPI_DSI0_VP3) && !defined(FF_MIPI_DSI1_VP3)
+#include "rk3588-firefly-aio-3588l-mipi-dsi0.dtsi"
+#endif
+#if defined(FF_MIPI_DSI1_VP3) && !defined(FF_MIPI_DSI0_VP3)
+#include "rk3588-firefly-aio-3588l-mipi-dsi1.dtsi"
+#endif
+```
+
+　　关键: 宏名只决定包含**哪个文件**; 文件名与 SoC 控制器号、物理屏座号
+均不对应:
+
+| 物理屏座 | SoC 控制器 | PHY | 本 SDK dtsi 文件 | 6.1 官方参考文件 |
+|---|---|---|---|---|
+| LCD0 座 (屏插这里, 已验证) | dsi0 (fde20000) | mipidcphy0 (feda0000) | ...mipi-**dsi1**.dtsi | ...dsi0-mipi101-BSD1218-A101KL68.dtsi |
+| LCD1 座 (差分对不通) | dsi1 (fde30000) | mipidcphy1 (fedb0000) | ...mipi-**dsi0**.dtsi | ...dsi1-mipi101-BSD1218-A101KL68.dtsi |
+
+　　判别"这份 dtsi 点的是哪个座"只看两处: 文件头注释 (LCD0/LCD1 引脚
+清单) 与内部引用 (&dsi0_in_vp3 / &mipi_dcphy0 = dsi0 控制器 = LCD0 座;
+&dsi1_in_vp3 / &mipi_dcphy1 = dsi1 控制器 = LCD1 座)。改文件前先核对,
+不要按文件名望文生义。
+
+### 7.2 两座引脚定义 (6.1 官方, 板级实测一致)
+
+| 信号 | LCD0 座 (dsi0 控制器) | LCD1 座 (dsi1 控制器) |
+|---|---|---|
+| 背光 PWM | PWM8_M0 = GPIO3_A7 (pwm8m0_pins) | PWM9_M0 = GPIO3_B0 (pwm9m0_pins) |
+| 背光 EN | GPIO1_B1 (gpio-33) | GPIO1_A4 (gpio-36) |
+| 屏 PWR_EN | GPIO3_B7 (高有效) | GPIO3_A0 (高有效) |
+| 屏 RST | GPIO3_B3 (低有效) | GPIO3_A4 (低有效) |
+| 触摸 I2C | i2c8 (i2c8m4_xfer) | i2c6 (i2c6m0_xfer) |
+| 触摸 INT | GPIO3_B1 (下降沿) | GPIO3_A1 (下降沿) |
+| 触摸 RST | GPIO3_B4 | GPIO3_A5 |
+
+　　背光均为 pwms = <&pwmX 0 50000 1> (20kHz), brightness-levels 0~255。
+
+### 7.3 双 panel 结构与已验证配方
+
+　　两份 dtsi 同构, 各含两个 panel 节点:
+
+| 节点 | panel0@0 (BSD1218) | panel1@0 (M101014) |
+|---|---|---|
+| clock-frequency | 70 MHz | 72.6 MHz |
+| 时序 | hs20/hbp20/hfp40/vs4/vbp20/vfp20 | hs14/hbp26/hfp32/vs8/vbp20/vfp80 |
+| init 命令 | FF 98 81 分页长初始化 (整段) | 仅 Sleep Out / Display On (05 78 01 11 / 05 32 01 29) |
+| status | disabled (备查) | okay (实屏点亮走此节点) |
+
+　　图链: dsi0_out_panel ----> panel1_in_dsi0 ----> panel1@0 (dsi1 侧同理,
+dsi1_out_panel ----> panel1_in_dsi1)。两 panel 均**不带 id 属性** (原因
+见 7.5)。
+
+　　实机屏体为 800x1280, 实测点亮走 panel1@0 (M101014 时序); BSD1218
+结构保留供同座换 BSD1218 屏时启用 (改 status 互换即可)。
+
+### 7.4 板级实测结论: LCD1 座 DSI 差分对硬件不通
+
+　　LCD1 座 (dsi1 控制器方案) 排查过程各环节实测:
+
+| 环节 | 结果 |
+|---|---|
+| 控制器出帧 (VP3, 70MHz) | ✓ 正常 |
+| 背光 PWM duty 78% / EN GPIO 拉高 | ✓ |
+| PHY (phy-fedb0000.phy.5) status okay | ✓ |
+| dts 参数 vs 6.1 官方 / 6.12 SG 官方 | 逐字节一致 |
+| 触摸 (i2c6 goodix ACK, 触摸事件) | ✓ |
+| modetest 彩条直打 | 命令执行成功, 屏无任何变化 |
+| 同屏换插 LCD0 座 | 立即点亮 |
+
+　　结论: LCD1 座触摸/背光等**低速线通, DSI 高速差分对不通** —— 硬件
+问题 (待查原理图/布线), 软件配置本身已验证正确。mipi-dsi0.dtsi (LCD1 座
+版) 保持完整可用, 供换板/修板后直接启用; 本板生产配置走 LCD0 座。
+
+### 7.5 U-Boot 在位检测误禁坑 (EARLY_DISTRO_DTB)
+
+　　与 2.3 的"无屏主动关座"不同, 本板踩的是**误禁**坑:
+
+- 本板 U-Boot CONFIG_EARLY_DISTRO_DTB=y 且 PATH 指向 rk-kernel.dtb →
+  U-Boot 拿**内核 dtb** 做屏检测 (rockchip_display.c →
+  rockchip_panel_fdt_disable_panels)
+- 触发条件 (rockchip_panel.c): DSI connector 下有多个 panel, 或单 panel
+  带 id 属性 → need_match → 拉电源/reset 后 mipi_dsi_dcs_read 读 ID
+- **读不到 ID → 整个 connector 的 panel*/touch/dsi 控制器/route 全部
+  status=disabled, 内核 dmesg 零日志** —— 表象是"屏不亮且无任何报错"
+- 修法: panel 节点**去掉 id 属性** (panel-read-id-sequence / id-reg / id
+  全删), 图链直指 enabled panel。内核 panel-simple-dsi 本就不解析这些
+  属性, 消费方只有 U-Boot
+- 只改内核 dts 重烧 boot 分区 rk-kernel.dtb 即可, U-Boot 不用重编
+
+　　教训: dts 属性的消费方可能不在内核 —— 疑似"死属性"先 grep U-Boot
+再下结论。
+
+　　该机制也可**主动利用**实现"无屏自动让位 HDMI" (ITX 板即此用法):
+panel 带 id 属性后, 无屏/座不通时 U-Boot 读 ID 超时 → 自动禁
+panel/touch/dsi/route → 内核无 DSI connector, 主屏落 HDMI, 且 DRM
+component master 不会被拖死。两个注意点 (rockchip_panel.c):
+
+- enabled 的 panel **每个都要带 id**: 无 id 的 enabled panel 会"空匹配
+  成功" (id_len=0 时 dcs_read 返回 0==0 算匹配), 检测形同虚设
+- id 值可先占位, 从 U-Boot 串口 "read panel id, reg: ..., val: ..."
+  打印读实际值回填 (期望值/实际值/超时三种情况均有打印)
+
+### 7.6 触摸驱动选择 (GT9271)
+
+　　实屏触摸 IC 为 Goodix GT9271 (i2c 探测 "IC Version: 9271_1020")。
+6.12 内核有 3 套 goodix 驱动:
+
+| 驱动 | compatible | 状态 |
+|---|---|---|
+| touchscreen/goodix.c (上游) | goodix,gt9271 等具体型号 | CONFIG_TOUCHSCREEN_GOODIX 未编 |
+| touchscreen/gt9xx/ | goodix,gt9xx | 未用 |
+| **touchscreen/gt9xxx/** | goodix,gt9xxx | **CONFIG_TOUCHSCREEN_GT9XXX=y, 本板用此** |
+
+　　hxchipset (himax) 与 goodix 的 INT/RST 定义在同一组 GPIO (LCD0 座同为
+GPIO3_B1/B4, LCD1 座同为 GPIO3_A1/A5), 二者只能使能一个。本板实屏是
+goodix, himax 节点保留 disabled 备查; hxchipset 驱动
+(CONFIG_TOUCHSCREEN_HIMAX_CHIPSET) 未编, 若换用自带 himax 触摸的屏需先
+补 config 再使能。
+
+### 7.7 黑屏排查方法论
+
+　　(1) 先分层:
+- 背光亮 + 触摸通 → 只剩 DSI 差分/初始化问题; 软件查时序/PHY, 硬件查差分对
+- 全黑 → 背光链路 (PWM/EN/供电), 先别看 DSI
+
+　　(2) i2cdetect 判屏座: 两座触摸总线不同 (LCD0=i2c8, LCD1=i2c6),
+i2cdetect -y 8 / -y 6 看 0x14 有无 ACK 即知屏插哪个座。SoC 侧全绿仍黑屏
+时, 先确认屏的物理位置再怀疑内核。
+
+　　(3) modetest 彩条一锤定音 (区分"软件没发帧" vs "硬件没收到帧"):
+
+```
+modetest -M rockchip -c                      # 列 connector, 找 DSI 的 id
+modetest -M rockchip -e                      # 列 encoder, 看绑定的 crtc
+modetest -M rockchip -s <conn>@<crtc>:800x1280   # 直打彩条
+```
+
+　　-s 的 crtc 必须用 encoder 绑定的那个 (如 encoder 284 → CRTC 152),
+用错报 "failed to find CRTC for pipe"。命令执行成功但屏无变化 = SoC→屏
+硬件断, 与软件配置无关。
+
+　　(4) 核对编译产物: 源码 grep 不到的节点/属性 (被宏裁掉的、phandle
+改写的) 以板上 dtb 为准 —— 从 /boot 拉 dtb 用 dtc 反编译逐个追。
+
+### 7.8 验证测试
+
+```
+# 连接器与使能状态
+ls /sys/class/drm/ | grep -i dsi
+cat /sys/class/drm/card*-DSI-*/status
+cat /sys/class/drm/card*-DSI-*/modes
+
+# VP 出帧 (确认控制器在发帧)
+cat /sys/kernel/debug/dri/0/summary
+
+# 背光 (LCD0 座 GPIO1_B1 = gpio-33; LCD1 座 GPIO1_A4 = gpio-36)
+cat /sys/class/backlight/*/brightness
+cat /sys/kernel/debug/pwm                   # 看 pwm8/pwm9 duty
+
+# 触摸
+cat /proc/bus/input/devices | grep -A4 goodix
+evtest                                       # 触摸事件
+
+# 彩条直打 (命令见 7.7)
+
+# 常见问题:
+# 1. 屏不亮且 dmesg 无任何 DSI/panel 日志: U-Boot 在位检测误禁 (7.5),
+#    检查 panel 是否残留 id 属性
+# 2. 背光亮但无图且触摸通: 先 i2cdetect 定座, 再 modetest 彩条分软硬
+# 3. 换座后触摸失效: 两座触摸在不同 i2c + 不同 GPIO, 必须换对应 dtsi
+#    (文件名与座交叉, 见 7.1 对照表)
+# 4. 触摸 X/Y 反向: gt9xxx cfg-group2 的 SWAP_XY/X2Y 字节
+# 5. 改 dts 不生效: 只重烧 boot 分区 rk-kernel.dtb; U-Boot 不用重编,
+#    但注意 U-Boot 会读同一份 dtb 做在位检测
 ```

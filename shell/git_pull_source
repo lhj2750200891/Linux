@@ -1,0 +1,484 @@
+#!/bin/sh
+
+# =========================================================
+# 代码根目录，自动适配本机和服务器：
+#   本机   (lhj-TChip): /media/lhj/data/t-chip/7.code
+#   服务器 (amd-epyc) : /home4/lhj
+# 也可在运行前 export GIT_PULL_BASE=/xxx 手动指定
+# =========================================================
+CODE_BASE="${GIT_PULL_BASE:-}"
+if [ -z "$CODE_BASE" ]; then
+    if [ -d "/media/lhj/data/t-chip/7.code" ]; then
+        CODE_BASE="/media/lhj/data/t-chip/7.code"
+    else
+        CODE_BASE="/home4/lhj"
+    fi
+fi
+
+print_line()
+{
+    echo "========================================"
+}
+
+print_menu() 
+{
+	echo ""
+	echo "Select repository to update:"
+	echo "  1) linux-qa"
+	echo "  2) rk1828-sdk-project-pull"
+	echo "  3) rootfs-ubuntu24"
+	echo "  4) wiki"
+	echo "  5) k3-6.18-uboot"
+	echo "  6) k3-6.18-kernel"
+	echo "  7) k3-6.18-esos"
+	echo "  8) k3-6.18-buildroot-ext"
+	echo "  9) rk3588-6.12-uboot"
+	echo " 10) rk3588-6.12-kernel"
+	echo " 11) rk3588-6.12-defconfig"
+	echo " 12) rk356x-5.10-uboot"
+	echo " 13) rk356x-5.10-kernel"
+	echo " 14) rk356x-5.10-defconfig"
+	echo " 15) rk3588-5.10-uboot"
+	echo " 16) rk3588-5.10-kernel"
+	echo " 17) rk3588-5.10-defconfig"
+	echo " 18) rk3588-6.1-uboot"
+	echo " 19) rk3588-6.1-kernel"
+	echo " 20) rk3588-6.1-defconfig"
+	echo "  0) quit"
+	echo ""
+}
+
+# =========================================================
+# 公共函数：执行一个仓库的更新流程
+# 参数：
+#   $1 = 显示名称
+#   $2 = 仓库路径
+#   $3 = 可选：切换分支，如 firefly-6.18，没有则传空字符串
+#   $4 = 可选：remote 名称，如 firefly-linux，没有则用默认 fetch/pull
+#   $5 = 可选：ff 合并到的远端分支，如 firefly-linux/rk356x/firefly-5.10。
+#        SDK 压缩包解出来的仓库一般是游离提交（detached HEAD），git pull 会
+#        报"not currently on a branch"，传入此参数后改用
+#        git merge --ff-only <远端分支> 实现等效的 pull
+# =========================================================
+update_code()
+{
+    name="$1"
+    repo_dir="$2"
+    branch="$3"
+    remote="$4"
+    merge_ref="$5"
+
+    print_line
+    echo "     Start update $name"
+    print_line
+
+    echo "<1> enter $name dir"
+    cd "$repo_dir" || {
+        echo "ERROR: 无法进入目录: $repo_dir"
+        return 1
+    }
+
+    if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        echo "ERROR: 不是可用的 git 仓库: $repo_dir"
+        echo "       （若 .git 是指向 .repo/projects/xxx 的失效软链接，"
+        echo "         需先恢复 .repo 目录或重新同步代码，才能执行 pull）"
+        return 1
+    fi
+
+    stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+    echo "<2> git stash"
+    if ! git stash push --include-untracked -m "git_pull_source: $name"; then
+        echo "ERROR: git stash 失败"
+        return 1
+    fi
+    stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+
+    if [ -n "$branch" ]; then
+        echo "<3> git switch $branch"
+        if ! git switch "$branch"; then
+            echo "ERROR: 无法切换分支: $branch"
+            [ "$stash_after" != "$stash_before" ] && git stash pop >/dev/null 2>&1 || true
+            return 1
+        fi
+    fi
+
+    if [ -n "$remote" ]; then
+        echo "<4> git fetch $remote"
+        if ! git fetch "$remote"; then
+            echo "ERROR: git fetch 失败"
+            [ "$stash_after" != "$stash_before" ] && git stash pop >/dev/null 2>&1 || true
+            return 1
+        fi
+    else
+        echo "<4> git fetch"
+        if ! git fetch; then
+            echo "ERROR: git fetch 失败"
+            [ "$stash_after" != "$stash_before" ] && git stash pop >/dev/null 2>&1 || true
+            return 1
+        fi
+    fi
+
+    if [ -n "$merge_ref" ]; then
+        echo "<5> git merge --ff-only $merge_ref"
+        if ! git merge --ff-only "$merge_ref"; then
+            echo "ERROR: git merge --ff-only 失败"
+            [ "$stash_after" != "$stash_before" ] && git stash pop >/dev/null 2>&1 || true
+            return 1
+        fi
+    else
+        echo "<5> git pull"
+        if ! git pull --ff-only; then
+            echo "ERROR: git pull 失败"
+            [ "$stash_after" != "$stash_before" ] && git stash pop >/dev/null 2>&1 || true
+            return 1
+        fi
+    fi
+
+    if [ "$stash_after" != "$stash_before" ]; then
+        echo "<6> git stash pop"
+        if ! git stash pop; then
+            echo "ERROR: stash pop 发生冲突，请手动处理"
+            return 1
+        fi
+    fi
+
+    print_line
+    echo "   Finished update $name"
+    print_line
+    echo " "
+    echo " "
+    sleep 2
+}
+
+k3_6_18_uboot() 
+{
+    update_code \
+    "U-Boot" \
+    "$CODE_BASE/riscv/spacemit/k3_6.18.3_sdk/bsp-src/uboot-2022.10" \
+    "" \
+    "firefly-linux"
+}
+
+k3_6_18_kernel() 
+{
+    update_code \
+    "Kernel" \
+    "$CODE_BASE/riscv/spacemit/k3_6.18.3_sdk/bsp-src/linux-6.18" \
+    "firefly-6.18" \
+    "firefly-linux"
+}
+
+k3_6_18_esos() 
+{
+    update_code \
+    "ESOS" \
+    "$CODE_BASE/riscv/spacemit/k3_6.18.3_sdk/package-src/esos" \
+    "" \
+    "firefly-linux"
+}
+
+k3_6_18_buildroot_ext() 
+{
+    update_code \
+    "buildroot-ext" \
+    "$CODE_BASE/riscv/spacemit/k3_6.18.3_sdk/buildroot-ext" \
+    "firefly" \
+    "firefly-linux"
+}
+
+linux_qa()
+{
+    update_code \
+    "linux-qa" \
+    "$CODE_BASE/linux-qa" \
+    "" \
+    ""
+}
+
+rootfs_ubuntu24()
+{
+    update_code \
+    "rootfs-ubuntu24" \
+    "$CODE_BASE/rootfs/ubuntu24.04/rootfs_build" \
+    "" \
+    ""
+}
+
+wiki()
+{
+    update_code \
+    "wiki" \
+    "$CODE_BASE/wiki/firefly-github-doc" \
+    "" \
+    ""
+}
+
+rk3588_6_12_uboot() 
+{
+    update_code \
+    "rk3588-6.12-uboot" \
+    "$CODE_BASE/arm64/rockchip/rk3588_6.12.69_sdk/u-boot" \
+    "" \
+    "firefly-linux"
+}
+
+rk3588_6_12_kernel() 
+{
+    update_code \
+    "rk3588-6.12-kernel" \
+    "$CODE_BASE/arm64/rockchip/rk3588_6.12.69_sdk/kernel-6.12" \
+    "" \
+    "firefly-linux"
+}
+
+rk3588_6_12_defconfig()
+{
+    update_code \
+    "rk3588-6.12-defconfig" \
+    "$CODE_BASE/arm64/rockchip/rk3588_6.12.69_sdk/device/rockchip" \
+    "" \
+    "firefly-linux"
+}
+
+rk356x_5_10_uboot()
+{
+    update_code \
+    "rk356x-5.10-uboot" \
+    "$CODE_BASE/arm64/rockchip/rk356x_5.10.198_sdk/u-boot" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/rk356x/firefly-5.10"
+}
+
+rk356x_5_10_kernel()
+{
+    update_code \
+    "rk356x-5.10-kernel" \
+    "$CODE_BASE/arm64/rockchip/rk356x_5.10.198_sdk/kernel" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/rk356x/firefly-5.10"
+}
+
+rk356x_5_10_defconfig()
+{
+    update_code \
+    "rk356x-5.10-defconfig" \
+    "$CODE_BASE/arm64/rockchip/rk356x_5.10.198_sdk/device/rockchip" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/rk356x/firefly-5.10"
+}
+
+rk3588_5_10_uboot()
+{
+    update_code \
+    "rk3588-5.10-uboot" \
+    "$CODE_BASE/arm64/rockchip/rk3588_5.10.198_sdk/u-boot" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/rk3588/firefly"
+}
+
+rk3588_5_10_kernel()
+{
+    update_code \
+    "rk3588-5.10-kernel" \
+    "$CODE_BASE/arm64/rockchip/rk3588_5.10.198_sdk/kernel" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/rk3588/firefly"
+}
+
+rk3588_5_10_defconfig()
+{
+    update_code \
+    "rk3588-5.10-defconfig" \
+    "$CODE_BASE/arm64/rockchip/rk3588_5.10.198_sdk/device/rockchip" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/firefly"
+}
+
+# 注意：rk3588_6.1.118_sdk 的 .git 全是指向已删除 .repo/ 的失效软链接，
+# 调用时会先被 update_code 的仓库检测拦下并提示，等 .repo 恢复后即可正常 pull
+rk3588_6_1_uboot()
+{
+    update_code \
+    "rk3588-6.1-uboot" \
+    "$CODE_BASE/arm64/rockchip/rk3588_6.1.118_sdk/u-boot" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/rk3588/firefly-6.1"
+}
+
+rk3588_6_1_kernel()
+{
+    update_code \
+    "rk3588-6.1-kernel" \
+    "$CODE_BASE/arm64/rockchip/rk3588_6.1.118_sdk/kernel-6.1" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/rk3588/firefly-6.1"
+}
+
+rk3588_6_1_defconfig()
+{
+    update_code \
+    "rk3588-6.1-defconfig" \
+    "$CODE_BASE/arm64/rockchip/rk3588_6.1.118_sdk/device/rockchip" \
+    "" \
+    "firefly-linux" \
+    "firefly-linux/firefly-6.1"
+}
+
+rk1828_sdk_project_pull()
+{
+    repo_dir="$CODE_BASE/arm64/rockchip/rk1828_sdk"
+
+    if ! command -v repo >/dev/null 2>&1; then
+        echo "ERROR: 找不到 repo 命令"
+        return 1
+    fi
+
+    if [ ! -d "$repo_dir/.repo" ]; then
+        echo "ERROR: 不是有效的 repo 工作区: $repo_dir"
+        return 1
+    fi
+
+    print_line
+    echo "     Start project-by-project pull rk1828-sdk"
+    print_line
+    cd "$repo_dir" || return 1
+
+    # repo forall 在每个 manifest 项目目录执行原来的 stash/fetch/pull/pop 流程。
+    repo forall --abort-on-errors -c '
+        project="$REPO_PATH"
+        remote="$REPO_REMOTE"
+        stash_before=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+
+        echo "[$project] stash"
+        if ! git stash push --include-untracked -m "git_pull_source: rk1828:$project"; then
+            echo "[$project] ERROR: git stash 失败"
+            exit 1
+        fi
+        stash_after=$(git rev-parse -q --verify refs/stash 2>/dev/null || true)
+
+        restore_stash()
+        {
+            if [ "$stash_after" != "$stash_before" ]; then
+                echo "[$project] stash pop"
+                git stash pop || return 1
+            fi
+        }
+
+        echo "[$project] git fetch $remote"
+        if ! git fetch "$remote"; then
+            echo "[$project] ERROR: git fetch 失败"
+            restore_stash || true
+            exit 1
+        fi
+
+        echo "[$project] git pull --ff-only"
+        if ! git pull --ff-only; then
+            echo "[$project] ERROR: git pull 失败"
+            restore_stash || true
+            exit 1
+        fi
+
+        if ! restore_stash; then
+            echo "[$project] ERROR: stash pop 冲突；原修改仍保留在 stash 中"
+            exit 1
+        fi
+    ' || {
+        echo "ERROR: 至少一个项目同步失败；没有执行 reset 或 force-sync"
+        return 1
+    }
+
+    print_line
+    echo "   Finished project-by-project pull rk1828-sdk"
+    print_line
+}
+
+
+
+while true; do
+    print_menu
+    printf "Please select: "
+    read choice
+
+    case "$choice" in
+        1)
+            linux_qa
+            ;;
+        2)
+            rk1828_sdk_project_pull
+            ;;
+        3)
+            rootfs_ubuntu24
+            ;;
+        4)
+            wiki
+            ;;
+        5)
+            k3_6_18_uboot
+            ;;
+        6)
+            k3_6_18_kernel
+            ;;
+        7)
+            k3_6_18_esos
+            ;;
+        8)
+            k3_6_18_buildroot_ext
+            ;;
+        9)
+            rk3588_6_12_uboot
+            ;;
+        10)
+            rk3588_6_12_kernel
+            ;;
+        11)
+            rk3588_6_12_defconfig
+            ;;
+        12)
+            rk356x_5_10_uboot
+            ;;
+        13)
+            rk356x_5_10_kernel
+            ;;
+        14)
+            rk356x_5_10_defconfig
+            ;;
+        15)
+            rk3588_5_10_uboot
+            ;;
+        16)
+            rk3588_5_10_kernel
+            ;;
+        17)
+            rk3588_5_10_defconfig
+            ;;
+        18)
+            rk3588_6_1_uboot
+            ;;
+        19)
+            rk3588_6_1_kernel
+            ;;
+        20)
+            rk3588_6_1_defconfig
+            ;;
+        0)
+            echo "Bye."
+            exit 0
+            ;;
+        *)
+            echo "Invalid option: $choice"
+            sleep 1
+            ;;
+    esac
+
+    echo ""
+    printf "Press Enter to continue..."
+    read dummy
+done

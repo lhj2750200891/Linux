@@ -352,3 +352,31 @@ aplay  -D hw:rockchipbt -f S16_LE -r 8000 -c 1 /tmp/ul.wav   # 上行放音
 | combphy2_psu | pcie2x1l1 (PCIe 5G 模组) | USB3 host3 / SATA2 |
 | i2s1_8ch (sdi0/sdo0) | 4G 模组通话音频 | (BT SCO 若走 sdi2/sdo3 可共存控制器, 不能同时用) |
 | PCA9555 IO0_0 | 4G_PWR_EN (itx/q) | (q 板无冲突, 按板核对) |
+
+
+
+## 6. 测试
+
+```
+# 查看是否存在USB节点
+ls /dev/ttyUSB*
+
+# 查看哪个节点是模块,回复OK
+for i in 0 1 2 3; do echo -e "AT\r" > /dev/ttyUSB$i; sleep 0.5; timeout 0.5 cat /dev/ttyUSB$i; echo " <-- ttyUSB$i"; done
+
+# 或者手动指令
+cat /dev/ttyUSB2 &
+echo -e "AT\r" > /dev/ttyUSB2   # OK即可
+echo -e "AT+CPIN?\r" > /dev/ttyUSB2    #READY 即可
+echo -e "AT+CIMI\r" > /dev/ttyUSB2    # 有卡的ID输出即可
+
+# 如果CPIN不是READY,读取不到SIM卡,先验证AT指令关闭热插拔,如下:
+echo -e "AT&F0\r\n" > /dev/ttyUSB2 //回复出厂
+echo -e "AT+QSIMSTAT=1\r\n" > /dev/ttyUSB2  // 使能热插拔
+echo -e "AT+QSIMDET=1,0\r\n" > /dev/ttyUSB2 // 设置热插拔低电平
+echo -e "AT+QSIMDET=1,1\r\n" > /dev/ttyUSB2 // 设置热插拔高电平
+echo -e "AT+QSIMDET=0,0\r\n" > /dev/ttyUSB2 // disabled 热插拔
+echo -e "AT+QSIMDET=?\r\n" > /dev/ttyUSB2 
+echo -e "AT+QSIMDET?\r\n" > /dev/ttyUSB2 
+```
+

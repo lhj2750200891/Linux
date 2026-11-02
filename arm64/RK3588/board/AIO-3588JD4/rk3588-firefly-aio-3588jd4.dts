@@ -1,0 +1,38 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2023 Rockchip Electronics Co., Ltd.
+ *
+ */
+/dts-v1/;
+#define rk3588
+
+#define FF_PCA9555
+#define FF_SDCARD
+#define FF_LED
+#define FF_FAN
+#define FF_RECOVERY_KEY
+#define FF_HDMI0
+#define FF_GMAC0
+#define FF_GMAC1
+#define FF_CAN
+#define FF_RS485
+#define FF_RS232
+#define FF_WDT_CORE
+#define FF_WDT_BASE
+#define FF_RTC_CORE
+#define FF_USB20_HOST0
+#define FF_USB30_HOST1 // typeC1 to typeA(down) host3.0 + usb2.0 hub
+#define FF_USB30_HOST0 // typeC0 to typeA(up) host3.0 + typeC usb2.0
+#define FF_WIFI_RTL8852BE
+#define FF_PCIE2_1L2
+#define FF_PCIE3_X2
+//#define FF_SATA0
+#define FF_CODEC_ES8388
+#define FF_CAM_IMX415
+
+#include "rk3588-firefly-aio-3588jd4.dtsi"
+
+/ {
+	model = "Firefly AIO-3588JD4";
+	compatible = "rockchip,aio-3588jd4", "rockchip,rk3588";
+};

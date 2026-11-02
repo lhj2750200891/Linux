@@ -1,0 +1,39 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2023 Rockchip Electronics Co., Ltd.
+ *
+ */
+/dts-v1/;
+
+#define FF_PCA9555
+#define FF_LEDS
+#define FF_FAN
+#define FF_SDCARD
+#define FF_USB20_HOST0
+#define FF_USB20_HOST1
+#define FF_USB30_HOST
+#define FF_TYPEC0_FULL
+#define FF_DP0
+#define FF_GMAC1
+#define FF_RTC
+#define FF_PCIE2_1L2
+#define FF_WIFIBT
+#define FF_EDP0_VP1
+#define FF_DSI1_VP3
+#define FF_MIPI_CSI2_IMX415
+#define FF_GSENSOR
+#define FF_CODEC_ES8388
+#define FF_CAN2
+#define FF_UART
+//#define FF_BP // expansion board
+//#define FF_DSI0_LVDS101_VP3
+//#define FF_DSI0_LVDS215_VP3
+//#define FF_MIPI_CSI2_CAMERA1_XC7160
+//#define FF_MIPI_CSI2_CAMERA2_XC7160
+
+#include "rk3588-firefly-aio-3588sg.dtsi"
+
+/ {
+	model = "Firefly AIO-3588SG";
+	compatible = "rockchip,aio-3588sg", "rockchip,rk3588";
+};

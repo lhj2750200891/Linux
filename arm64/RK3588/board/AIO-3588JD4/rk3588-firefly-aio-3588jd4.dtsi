@@ -1,0 +1,716 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2022 Rockchip Electronics Co., Ltd.
+ *
+ */
+#include "rk3588-firefly-core-3588jd4.dtsi"
+
+/ {
+#ifdef FF_SDCARD
+        vcc_sdcard_pwr_en: vcc-sdcard-pwr-en-regulator {
+                compatible = "regulator-fixed";
+                regulator-name = "vcc_sdcard_pwr_en";
+                regulator-boot-on;
+                regulator-always-on;
+                enable-active-high;
+		gpio = <&gpio1 RK_PA7 GPIO_ACTIVE_HIGH>;
+                status = "okay";
+        };
+#endif
+
+#ifdef FF_LED 
+	firefly_leds: leds {
+		compatible = "gpio-leds";
+		status = "okay";
+                user_led: user {
+			label = ":user";
+			gpios = <&pca9555 PCA_IO0_3 GPIO_ACTIVE_HIGH>; //yellow led
+			default-state = "off";
+		};
+	};
+#endif
+
+#ifdef FF_FAN
+	fan: pwm-fan {
+		compatible = "pwm-fan";
+		#cooling-cells = <2>;
+		fan-supply = <&vcc5v0_sys>;
+		pwms = <&pwm5 0 50000 0>;
+		cooling-levels = <50 50 100 150 200 255>;
+		rockchip,temp-trips = <
+			50000   1
+			55000   2
+			60000   3
+			65000   4
+			70000   5
+		>;
+	};
+#endif
+
+#ifdef FF_USB30_HOST0
+	vbus5v0_typec0: vbus5v0-typec0 {
+		compatible = "regulator-fixed";
+		regulator-name = "vbus5v0_typec0";
+		regulator-min-microvolt = <5000000>;
+		regulator-max-microvolt = <5000000>;
+                regulator-boot-on;
+                regulator-always-on;
+		enable-active-high;
+		gpio = <&gpio1 RK_PA3 GPIO_ACTIVE_HIGH>;
+		vin-supply = <&vcc5v0_sys>;
+	};
+#endif
+
+#ifdef FF_USB30_HOST1
+        vcc5v0_usb30: vcc5v0-usb30 {
+                status = "okay";
+                compatible = "regulator-fixed";
+                regulator-name = "vcc5v0_usb30";
+                regulator-boot-on;
+                regulator-always-on;
+                regulator-min-microvolt = <5000000>;
+                regulator-max-microvolt = <5000000>;
+                enable-active-high;
+		gpio = <&pca9555 PCA_IO0_2 GPIO_ACTIVE_HIGH>;
+		vin-supply = <&vcc5v0_sys>;
+        };
+#endif
+
+#ifdef FF_WIFI_RTL8852BE
+        wireless_wlan: wireless-wlan {
+                compatible = "wlan-platdata";
+		wifi_chip_type = "rtl8852be";
+		WIFI,host_wake_irq = <&pca9555 PCA_IO1_2 GPIO_ACTIVE_HIGH>;
+                status = "okay";
+        };
+#endif
+
+#ifdef FF_CODEC_ES8388
+	es8388_sound: es8388-sound {
+		status = "okay";
+		compatible = "rockchip,multicodecs-card";
+		rockchip,card-name = "rockchip-es8388";
+		hp-det-gpio = <&gpio2 RK_PC3 GPIO_ACTIVE_HIGH>;
+		hp-con-gpio = <&pca9555 PCA_IO1_3 GPIO_ACTIVE_HIGH>;
+		io-channels = <&saradc 6>;
+		io-channel-names = "adc-detect";
+		keyup-threshold-microvolt = <1800000>;
+		poll-interval = <100>;
+		linein-type = <4>;
+		rockchip,pre-power-on-delay-ms = <30>;
+		rockchip,post-power-down-delay-ms = <40>;
+		rockchip,format = "i2s";
+		rockchip,mclk-fs = <256>;
+		rockchip,cpu = <&i2s0_8ch>;
+		rockchip,codec = <&es8388>;
+		rockchip,audio-routing =
+			"Headphone", "LOUT1",
+			"Headphone", "ROUT1",
+			"Speaker", "LOUT2",
+			"Speaker", "ROUT2",
+			"Headphone", "Headphone Power",
+			"Headphone", "Headphone Power",
+			"Speaker", "Speaker Power",
+			"Speaker", "Speaker Power",
+			"LINPUT1", "Main Mic",
+			"LINPUT2", "Main Mic",
+			"RINPUT1", "Headset Mic",
+			"RINPUT2", "Headset Mic";
+		pinctrl-names = "default";
+		pinctrl-0 = <&hp_det>;
+		play-pause-key {
+			label = "playpause";
+			linux,code = <KEY_PLAYPAUSE>;
+			press-threshold-microvolt = <2000>;
+		};
+	};
+#endif
+};
+
+&i2c3 {
+	status = "okay";
+	pinctrl-names = "default";
+	pinctrl-0 = <&i2c3m2_xfer>;
+
+#ifdef FF_PCA9555
+	pca9555: gpio@21 {
+		status = "okay";
+		compatible = "nxp,pca9555";
+		reg = <0x21>;
+		gpio-controller;
+		#gpio-cells = <2>;
+		gpio-group-num = <200>;
+	};
+#endif
+};
+
+&gpio0 {
+#ifdef FF_WIFI_RTL8852BE
+	wifi_wdisable_gpio: wifi-wdisable-gpio {
+		gpio-hog;
+		gpios = <RK_PD3 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "wifi-wdisable";
+	};
+#endif
+};
+
+#ifdef FF_FAN
+&pwm5 {
+        pinctrl-0 = <&pwm5m1_pins>;
+        status = "okay";
+};
+#endif
+
+#ifdef FF_CAN
+&can1 {
+        status = "okay";
+        assigned-clocks = <&cru CLK_CAN1>;
+        assigned-clock-rates = <200000000>;
+        pinctrl-names = "default";
+        pinctrl-0 = <&can1m1_pins>;
+};
+#endif
+
+#ifdef FF_RS485
+&uart6{
+        pinctrl-0 = <&uart6m1_xfer>;
+        status = "okay";
+};
+#endif
+
+#ifdef FF_RS232
+&uart1{
+        pinctrl-0 = <&uart1m1_xfer>;
+        status = "okay";
+};
+#endif
+
+#ifdef FF_WDT_BASE
+&i2c4 {
+        status = "okay";
+        pinctrl-0 = <&i2c4m1_xfer>;
+        pc9202@3c {
+                status = "okay";
+                compatible = "firefly,pc9202";
+                reg = <0x3c>;
+                index = <1>;
+                pinctrl-names = "default";
+                pinctrl-0 = <&wdt_en_base>;
+
+                wd-en-gpio = <&gpio0 RK_PC4 GPIO_ACTIVE_HIGH>;
+                driver-names = "wdt_base";
+        };
+};
+#endif
+
+#ifdef FF_USB20_HOST0
+&vcc5v0_usb20_host0 {
+        status = "okay";
+	gpio = <&pca9555 PCA_IO0_2 GPIO_ACTIVE_HIGH>;
+};
+#endif
+
+#ifdef FF_USB30_HOST0
+&usbdrd3_0 {
+        status = "okay";
+};
+
+&usbdrd_dwc3_0 {
+	dr_mode = "host";
+        status = "okay";
+};
+
+&u2phy0 {
+        status = "okay";
+};
+
+&u2phy0_otg {
+	//rockchip,typec-vbus-det;
+	phy-supply = <&vcc5v0_usb30>;
+        status = "okay";
+};
+
+&usbdp_phy0 {
+        status = "okay";
+};
+#endif
+
+
+#ifdef FF_USB30_HOST1
+&usbdrd3_1 {
+        status = "okay";
+};
+
+&usbdrd_dwc3_1 {
+	dr_mode = "host";
+        status = "okay";
+};
+
+&u2phy1 {
+        status = "okay";
+};
+
+&u2phy1_otg {
+	phy-supply = <&vcc5v0_usb30>;
+        status = "okay";
+};
+
+&usbdp_phy1 {
+        status = "okay";
+};
+
+#endif
+
+#ifdef FF_WIFI_RTL8852BE
+&vcc3v3_pcie3x2_0 {
+	status = "disabled";
+};
+
+&pcie3x2 {
+	status = "disabled";
+};
+
+&pcie3x4 {
+	status = "okay";
+};
+	
+&vcc3v3_pcie3x2_1{
+	/* regulator-fixed uses the singular gpio property. */
+	gpio = <&pca9555 PCA_IO0_4 GPIO_ACTIVE_HIGH>;
+	startup-delay-us = <5000>;
+	status = "okay";
+};
+#endif
+
+#if defined(FF_PCIE2_1L2) && !defined(FF_SATA0)
+&vcc3v3_pcie20_1l2 {
+	gpio = <&pca9555 PCA_IO1_4 GPIO_ACTIVE_HIGH>;
+};
+
+&pcie2x1l2 {
+	reset-gpios = <&gpio4 RK_PA3 GPIO_ACTIVE_HIGH>;
+};
+#endif
+
+#if defined(FF_SATA0) && !defined(FF_PCIE2_1L2)
+&vcc3v3_sata0 {
+	gpio = <&pca9555 PCA_IO1_4 GPIO_ACTIVE_HIGH>;
+};
+#endif
+
+&i2c6 {
+        status = "okay";
+        
+#ifdef FF_CODEC_ES8388
+	es8388: es8388@11 {
+		status = "okay";
+		#sound-dai-cells = <0>;
+		compatible = "everest,es8388", "everest,es8323";
+		reg = <0x11>;
+		clocks = <&mclkout_i2s0>;
+		clock-names = "mclk";
+		assigned-clocks = <&mclkout_i2s0>;
+		assigned-clock-rates = <12288000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&i2s0_mclk>;
+	};
+#endif
+};
+
+#ifdef FF_CODEC_ES8388
+&i2s0_8ch {
+	status = "okay";
+        pinctrl-0 = <&i2s0_lrck
+                                &i2s0_sclk
+                                &i2s0_sdi0
+                                &i2s0_sdo0>;
+};
+#endif
+
+&pinctrl {
+#ifdef FF_WDT_BASE
+       wdt-pc9202 {
+
+                wdt_en_base: wdt-en-base {
+                        rockchip,pins = <0 RK_PC4 RK_FUNC_GPIO &pcfg_pull_none>;
+                };
+
+        };
+#endif
+
+#ifdef FF_CODEC_ES8388
+	headphone {
+		hp_det: hp-det {
+			rockchip,pins = <2 RK_PC3 RK_FUNC_GPIO &pcfg_pull_none>;
+		};
+	};
+#endif
+};
+
+#ifdef FF_CAM_IMX415
+/* ===== inlined from top-level dts: #include "rk3588-firefly-aio-3588jd4-mipi-csi0-imx415.dtsi" ===== */
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2021 Rockchip Electronics Co., Ltd.
+ *
+ */
+#define CAM0_OR_CAM1 1
+
+/ {
+
+        cam0_cam1_switch: cam0-cam1-switch {
+                compatible = "regulator-fixed";
+                regulator-name = "cam0_cam1_switch";
+                regulator-min-microvolt = <1800000>;
+                regulator-max-microvolt = <1800000>;
+                regulator-boot-on;
+                regulator-always-on;
+                status = "okay";
+
+#if CAM0_OR_CAM1
+                enable-active-high;
+                gpio = <&gpio3 RK_PC1 GPIO_ACTIVE_HIGH>;
+#else
+                enable-active-low;
+                gpio = <&gpio3 RK_PC1 GPIO_ACTIVE_LOW>;
+#endif
+
+                pinctrl-names = "default";
+                pinctrl-0 = <&cam0_or_cam1_switch_pin>;
+        };
+};
+
+&pinctrl {
+        cam {
+                cam0_or_cam1_switch_pin:cam0-or-cam1-switch-pin{
+                        rockchip,pins = <3 RK_PC1 RK_FUNC_GPIO &pcfg_pull_none>;
+                };
+        };
+};
+
+&spi0 {
+        status = "disabled";
+};
+
+
+
+#if CAM0_OR_CAM1
+&i2c6 {
+	status = "okay";
+
+        imx415: imx415@37{
+               compatible = "sony,imx415";
+               reg = <0x37>;
+               clocks = <&cru CLK_MIPI_CAMARAOUT_M1>;
+               clock-names = "xvclk";
+               pinctrl-names = "default";
+               pinctrl-0 = <&mipim1_camera1_clk>;
+               power-domains = <&power RK3588_PD_VI>;
+
+               power-gpios = <&gpio3 RK_PD5 GPIO_ACTIVE_HIGH>;
+#ifdef FF_PCA9555
+               reset-gpios = <&pca9555 PCA_IO0_5 GPIO_ACTIVE_LOW>;
+#else
+	       /delete-property/ reset-gpios;
+#endif
+
+	       #define FF_COMPATIBLE
+               //avdd-supply = <&vcc_mipidcphy0>;
+               firefly,clkout-enabled-index = <0>;
+               rockchip,camera-module-index = <0>;
+               rockchip,camera-module-facing = "back";
+               rockchip,camera-module-name = "CMK-OT2022-PX1";
+               rockchip,camera-module-lens-name = "IR0147-50IRC-8M-F20";
+               port {
+                        imx415_out0: endpoint {
+                               remote-endpoint = <&mipidphy0_in_ucam1>;
+                               data-lanes = <1 2 3 4>;
+                       };
+               };
+       };
+
+};
+
+&csi2_dphy0 {
+	status = "okay";
+#ifdef FF_COMPATIBLE 
+	firefly-compatible;
+#endif
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipidphy0_in_ucam1: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&imx415_out0>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csidphy0_out1: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&mipi2_csi2_input1>;
+			};
+		};
+	};
+};
+
+&csi2_dphy0_hw {
+	status = "okay";
+};
+
+
+&mipi2_csi2 {
+	status = "okay";
+#ifdef FF_COMPATIBLE
+	firefly-compatible;
+#endif
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi2_csi2_input1: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&csidphy0_out1>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi2_csi2_output1: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&cif_mipi2_in1>;
+			};
+		};
+	};
+};
+
+&rkcif_mipi_lvds2 {
+	status = "okay";
+
+	port {
+		cif_mipi2_in1: endpoint {
+			remote-endpoint = <&mipi2_csi2_output1>;
+		};
+	};
+};
+
+&rkcif_mipi_lvds2_sditf {
+	status = "okay";
+
+	port {
+		mipi2_lvds2_sditf: endpoint {
+			remote-endpoint = <&isp0_vir2>;
+		};
+	};
+};
+
+&rkcif {
+	status = "okay";
+};
+
+&rkcif_mmu {
+	status = "okay";
+};
+
+&rkisp0 {
+	status = "okay";
+};
+
+&isp0_mmu {
+	status = "okay";
+};
+
+&rkisp0_vir2 {
+	status = "okay";
+
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		isp0_vir2: endpoint@0 {
+			reg = <0>;
+			remote-endpoint = <&mipi2_lvds2_sditf>;
+		};
+	};
+};
+
+#else
+
+&spi1 {
+        status = "disabled";
+};
+
+&i2c6 {
+        status = "okay";
+
+        imx415: imx415@37{
+               compatible = "sony,imx415";
+               reg = <0x37>;
+               clocks = <&cru CLK_MIPI_CAMARAOUT_M0>;
+               clock-names = "xvclk";
+               pinctrl-names = "default";
+               pinctrl-0 = <&mipim0_camera0_clk>;
+               power-domains = <&power RK3588_PD_VI>;
+
+               power-gpios = <&gpio1 RK_PD5 GPIO_ACTIVE_HIGH>;
+#ifdef FF_PCA9555
+               reset-gpios = <&pca9555 PCA_IO0_6 GPIO_ACTIVE_LOW>;
+#else
+	       /delete-property/ reset-gpios;
+#endif
+               #define FF_COMPATIBLE
+               firefly,clkout-enabled-index = <0>;
+               rockchip,camera-module-index = <2>;
+               rockchip,camera-module-facing = "back";
+               rockchip,camera-module-name = "CMK-OT2022-PX1";
+               rockchip,camera-module-lens-name = "IR0147-50IRC-8M-F20";
+               port {
+                       imx415_out1: endpoint {
+                               remote-endpoint = <&mipidphy3_in_ucam1>;
+                               data-lanes = <1 2 3 4>;
+                       };
+               };
+       };
+};
+
+&csi2_dphy1_hw {
+	status = "okay";
+};
+
+&csi2_dphy3 {
+	status = "okay";
+#ifdef FF_COMPATIBLE
+	firefly-compatible;
+#endif
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipidphy3_in_ucam1: endpoint@1 {
+				reg = <1>;
+				remote-endpoint = <&imx415_out1>;
+				data-lanes = <1 2 3 4>;
+			};
+		};
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			csidphy3_out1: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&mipi4_csi2_input1>;
+			};
+		};
+	};
+};
+
+&mipi4_csi2 {
+	status = "okay";
+
+#ifdef FF_COMPATIBLE
+	firefly-compatible;
+#endif
+	ports {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		port@0 {
+			reg = <0>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi4_csi2_input1: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&csidphy3_out1>;
+			};
+		};
+
+		port@1 {
+			reg = <1>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+
+			mipi4_csi2_output1: endpoint@0 {
+				reg = <0>;
+				remote-endpoint = <&cif_mipi4_in1>;
+			};
+		};
+	};
+};
+
+&rkcif_mipi_lvds4 {
+        status = "okay";
+
+        port {
+                cif_mipi4_in1: endpoint {
+                        remote-endpoint = <&mipi4_csi2_output1>;
+                };
+        };
+};
+
+&rkcif_mipi_lvds4_sditf {
+	status = "okay";
+
+	port {
+		mipi4_lvds4_sditf: endpoint {
+			remote-endpoint = <&isp0_vir2>;
+		};
+	};
+};
+
+
+&rkcif {
+	status = "okay";
+};
+
+&rkcif_mmu {
+	status = "okay";
+};
+
+&rkisp0 {
+	status = "okay";
+};
+
+&isp0_mmu {
+	status = "okay";
+};
+
+&rkisp0_vir2 {
+	status = "okay";
+
+	port {
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		isp0_vir2: endpoint@1 {
+			reg = <1>;
+			remote-endpoint = <&mipi4_lvds4_sditf>;
+		};
+	};
+};
+
+#endif
+#endif

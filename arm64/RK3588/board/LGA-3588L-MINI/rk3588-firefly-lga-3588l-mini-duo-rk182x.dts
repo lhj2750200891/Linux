@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2023 Rockchip Electronics Co., Ltd.
+ *
+ */
+
+/dts-v1/;
+#define rk3588
+
+#define FF_12V_DCIN
+#define FF_LEDS
+#define FF_SDCARD
+#define FF_GMAC0
+#define FF_GMAC1
+#define FF_USB30_HOST
+#define FF_HDMI0
+#define FF_M2_SSD0
+#define FF_M2_SSD1
+#define FF_FAN0
+#define FF_FAN1
+#define FF_RTC
+#define FF_TYPEC_FULL
+#define FF_RECOVERY_KEY
+//#define FF_WATCHDOG
+//#define FF_CURRENT_MONITOR
+
+#include "rk3588-firefly-lga-3588l-mini-duo-rk182x.dtsi"
+
+/ {
+	model = "Firefly LGA-3588L-MINI-DUO-RK182X";
+	compatible = "rockchip,lga-3588l-mini-duo-rk182x", "rockchip,rk3588";
+};

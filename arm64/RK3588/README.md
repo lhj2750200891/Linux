@@ -30,7 +30,7 @@ roc-rk3588s-pc / robotic-evb-v11) 的设备树配置, 供自研板移植参考�
 | CAN | [can.md](can.md) | 内置 can1/can2 + SPI MCP2518FD | 2026-10-29 |
 | RS232/RS485 | [rs232-rs485.md](rs232-rs485.md) | RS232 多路 / RS485 自动换向 / GPIO 方向控制 | 2026-10-29 |
 | WiFi/BT | [wifi-bt.md](wifi-bt.md) | PCIe+UART (AP6275P) / PCIe+USB BT (RTL8852BE, 含 BT 走 UART 范本) / SDIO+UART (AIC8800) | 2026-10-29 |
-| 声卡 | [sound-card.md](sound-card.md) | ES8388 (es8323 驱动) / ES8390 (es8389 驱动) + HDMI/eDP/DP/BT SCO | 2026-10-29 |
+| 声卡 | [sound-card.md](sound-card.md) | ES8388 (es8323 驱动) / ES8390 (es8389 驱动) + HDMI/eDP/DP/BT SCO, 含喇叭无声实战排查 | 2026-10-30 |
 | 4G/5G 模组 | [4g-5g-module.md](4g-5g-module.md) | USB 型 (EC20/EM05, QMI/MBIM) / PCIe 型 (itx pcie2x1l1) / 通话音频 (i2s1+bt_sco) | 2026-10-29 |
 | LVDS 屏 | [lvds.md](lvds.md) | LT9211D 桥接 (驱动移植实录: 6.12 API 差异/编译错误全解) | 2026-10-29 |
 | SD 卡 / SDIO | [sdcard.md](sdcard.md) | TF 卡 (sdmmc) + SDIO WiFi (sdio) / eMMC (sdhci) 全景 | 2026-10-29 |

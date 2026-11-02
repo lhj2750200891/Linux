@@ -1,0 +1,78 @@
+#!/bin/bash
+# 本机 → 服务器 同步脚本
+# 用法: 21_server_sync <相对目录名>
+# 示例: 21_server_sync riscv/spacemit/k3_6.18.3_sdk/kernel
+
+# ===== 配置区 =====
+SERVER_USER="lhj"
+SERVER_IP="172.16.0.21"                              # ← 改成实际 IP
+LOCAL_ROOT="/media/lhj/data/t-chip/7.code"            # 本机根目录
+REMOTE_ROOT="/home4/lhj"                              # 服务器根目录
+# ==================
+
+set -u
+
+if [ $# -lt 1 ]; then
+    echo "用法: $0 <相对目录名>"
+    echo "示例: $0 riscv/spacemit/k3_6.18.3_sdk/kernel"
+    echo "      $0 arm64/rockchip/rk3588_5.10.198_sdk/kernel"
+    exit 1
+fi
+
+SUBDIR="$1"
+LOCAL_PATH="${LOCAL_ROOT}/${SUBDIR}/"
+REMOTE_PATH="${SERVER_USER}@${SERVER_IP}:${REMOTE_ROOT}/${SUBDIR}/"
+
+if [ ! -d "$LOCAL_PATH" ]; then
+    echo "错误: 本机目录不存在: $LOCAL_PATH"
+    exit 1
+fi
+
+echo "=========================================="
+echo "同步方向: 本机 → 服务器"
+echo "本机路径: $LOCAL_PATH"
+echo "服务器路径: $REMOTE_PATH"
+echo "=========================================="
+echo ""
+
+# rsync 默认按“大小 + 修改时间”判断变化，只传输变动的部分（增量同步）：
+# --partial        保留传输中断的部分文件，续传时不必从头开始；
+# --delay-updates  全部传输完成后再一次性落盘，避免半成品文件覆盖旧版本；
+# --info=progress2 显示整体进度，否则大目录静默扫描期间看起来像卡死。
+LOG_FILE=$(mktemp /tmp/rsync_sync.XXXXXX.log)
+trap 'rm -f "$LOG_FILE"' EXIT
+
+rsync -az --partial --delay-updates \
+    --info=progress2 \
+    --itemize-changes \
+    --out-format='%i %n%L' \
+    --exclude='.git/' \
+    --exclude='*.o' \
+    --exclude='*.a' \
+    --exclude='*.cmd' \
+    -e ssh \
+    "$LOCAL_PATH" \
+    "$REMOTE_PATH" | tee "$LOG_FILE"
+
+RSYNC_EXIT=${PIPESTATUS[0]}
+
+echo ""
+echo "=========================================="
+echo "变动文件统计:"
+# itemize-changes 的每一行都代表一次实际变更；未变化文件不会输出。
+CHANGED_FILES=$(awk 'NF && $1 != "*deleting" {count++} END {print count + 0}' "$LOG_FILE")
+echo "  变动文件数: $CHANGED_FILES"
+
+if [ "$CHANGED_FILES" -gt 0 ]; then
+    echo ""
+    echo "变动的文件列表:"
+    awk 'NF && $1 != "*deleting" {print "  " $0}' "$LOG_FILE"
+fi
+
+echo "=========================================="
+if [ $RSYNC_EXIT -eq 0 ]; then
+    echo "✅ 同步完成"
+else
+    echo "❌ 同步失败"
+    exit 1
+fi

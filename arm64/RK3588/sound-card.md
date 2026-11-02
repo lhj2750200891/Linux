@@ -34,7 +34,7 @@ CONFIG_SND_SOC_BT_SCO=m                    # BT SCO (见第 7 节)
 
 | 板 | 芯片 | I2C 总线 | codec 地址 | hp-det | spk/hp-con |
 |---|---|---|---|---|---|
-| AIO-3588SG | ES8388 | i2c7 (m0) | 0x11 | saradc CH4 | spk GPIO3_B7 |
+| AIO-3588SG | ES8388 | i2c7 (m0) | 0x11 | saradc CH4 | spk GPIO1_C0 |
 | itx-3588j | ES8388 | i2c3 | 0x11 | gpio1_C4 低 | spk GPIO3_B2, hp GPIO4_B0 |
 | aio-3588q | ES8388 | i2c3 (m0) | 0x11 | saradc | - |
 | aio-3588jd4/sjd4 | ES8388 | i2c6 / i2c7 | 0x11 | gpio2_C3 高 (jd4) | hp PCA9555 IO1_3 (jd4) |
@@ -42,6 +42,8 @@ CONFIG_SND_SOC_BT_SCO=m                    # BT SCO (见第 7 节)
 
 - MCLK 一律走 mclkout_i2s0 (i2s0_mclk 引脚 GPIO1_C2), 12.288MHz
 - I2S 数据引脚一律 i2s0_sdi0/sdo0 (录音 GPIO1_D4 / 放音 GPIO1_C7)
+- **AIO-3588SG 的 spk-con 必须是 GPIO1_C0**: 5.10 适配版即此脚; 6.1/6.12 SDK
+  dtsi 误写成 GPIO3_B7 (该脚没接功放, 照抄必无声, 2026-10-30 实录踩坑)
 
 ## 3. 方式一: ES8388
 
@@ -57,9 +59,9 @@ ES8388:
   录音 SD      ====> i2s0_sdi0 = GPIO1_D4 (codec DACOUT -> SOC)
   放音 SD      ====> i2s0_sdo0 = GPIO1_C7 (SOC -> codec DACIN)
   耳机检测     ====> SARADC CH4 (分压检测插入, 无 GPIO)
-  喇叭功放使能 ====> GPIO3_B7 (spk-con, 高有效)
-  输出: LOUT2/ROUT2 -> 喇叭功放; LOUT1/ROUT1 -> 耳机 (SG 板注释掉)
-  输入: LINPUT1/RINPUT1 麦克风 (SG 板注释掉)
+  喇叭功放使能 ====> GPIO1_C0 (spk-con, 高有效; 6.1/6.12 SDK 误写 GPIO3_B7)
+  输出: LOUT2/ROUT2 -> 喇叭功放; LOUT1/ROUT1 -> 耳机
+  输入: LINPUT1/RINPUT1 主麦克风, LINPUT2/RINPUT2 耳机麦克风
 ```
 
 ### 3.2 设备树配置 (三段, 全部直接可用)
@@ -77,25 +79,25 @@ ES8388:
 		io-channel-names = "adc-detect";
 		keyup-threshold-microvolt = <1800000>;    // 高于 1.8V 视为拔出
 		poll-interval = <100>;                    // 100ms 轮询
-		spk-con-gpio = <&gpio3 RK_PB7 GPIO_ACTIVE_HIGH>;  // 喇叭功放使能
+		spk-con-gpio = <&gpio1 RK_PC0 GPIO_ACTIVE_HIGH>;  // 喇叭功放使能 (6.1/6.12 SDK 误写 gpio3 RK_PB7, 勿抄)
 		//hp-con-gpio = <&gpio3 RK_PB2 GPIO_ACTIVE_HIGH>; // 耳机功放使能(有则加)
 		rockchip,format = "i2s";
 		rockchip,mclk-fs = <256>;                 // MCLK = 256 * fs
 		rockchip,cpu = <&i2s0_8ch>;
 		rockchip,codec = <&es8388>;
 		rockchip,audio-routing =
+			"Headphone", "LOUT1",            // 耳机接 LOUT1/ROUT1
+			"Headphone", "ROUT1",
 			"Speaker", "LOUT2",              // 喇叭接 LOUT2/ROUT2
 			"Speaker", "ROUT2",
+			"Headphone", "Headphone Power",
+			"Headphone", "Headphone Power",
 			"Speaker", "Speaker Power",
-			"Speaker", "Speaker Power";
-			// 耳机启用时加:
-			//"Headphone", "LOUT1",
-			//"Headphone", "ROUT1",
-			//"Headphone", "Headphone Power",
-			//"Headphone", "Headphone Power",
-			// 麦克风启用时加:
-			//"LINPUT1", "Main Mic",
-			//"RINPUT1", "Headset Mic",
+			"Speaker", "Speaker Power",
+			"LINPUT1", "Main Mic",           // 麦克风对 (录音通路)
+			"LINPUT2", "Main Mic",
+			"RINPUT1", "Headset Mic",
+			"RINPUT2", "Headset Mic";        // 以上 routing 与 5.10 适配版一致, 全量写全
 		//pinctrl-names = "default";
 		//pinctrl-0 = <&hp_det>;                 // GPIO 检测时配 pinctrl
 		play-pause-key {                          // 耳机按键 (ADC 分压识别)
@@ -409,3 +411,90 @@ assigned-clock-rates 未生效
 # 5. 耳机检测不工作: saradc 的 io-channels 通道号与硬件分压电路对不上
 # 6. DP 无声: spdif_tx2 未使能 (DP audio 走 spdif, 不是 i2s)
 ```
+
+## 7. 实战排查: 声卡在但喇叭无声 (两层坑叠加)
+
+　　2026-10-30 AIO-3588SG 实录: 卡注册正常、播放 RUNNING、音量全开,
+喇叭却一点声音没有。根因是两层问题叠加, 逐层定位:
+
+- **第一层 (软件, Ubuntu rootfs 通用): DAPM pin 开关被关。**
+  machine 驱动用 SOC_DAPM_PIN_SWITCH 为 "Speaker" pin 生成用户态控件
+  `Speaker Switch`; Ubuntu 的 wireplumber (被 pipewire.service 绑定拉起)
+  在全新会话首次枚举声卡时按端口优先级选中 Headphone, 应用路由的同时把
+  `Speaker Switch` 写成 off。后果: Speaker 端点 connected=0, DAPM 拒绝
+  给它供电, 整条 LOUT2/ROUT2→Speaker 分支全部灭, 功放使能事件
+  (mc_spk_event) 永不触发。只在新会话冷启动发生一次, 运行中重启
+  wireplumber 不会复现, 极易误排除。
+
+- **第二层 (硬件定义, 本板主因): spk-con GPIO 抄错脚。**
+  5.10 适配版 `spk-con-gpio = <&gpio1 RK_PC0>` (GPIO1_C0), 6.1/6.12 SDK
+  的 dtsi 误写成 `<&gpio3 RK_PB7>` (GPIO3_B7)。该脚没接功放, 使能拉得
+  再高也没用。两层是叠加关系: pin 关掉会掩盖 GPIO 错, pin 开了 GPIO
+  不对照样无声, 必须分开验证。
+
+　　逐层验证链 (播放运行中执行, 全绿才可能出声):
+
+```
+mount -t debugfs none /sys/kernel/debug          # 需要 debugfs
+
+# 1. pin 开关: 必须 on
+amixer -c0 cget name="Speaker Switch"
+
+# 2. DAPM 端点: On 且 out 1 (out 0 即 pin 被禁)
+head -1 "/sys/kernel/debug/asoc/rockchip-es8388/dapm/Speaker"
+# codec 内部从源头到输出逐个看: I2S IN / Left DAC / Left Mixer /
+# Left Out 2 / OUT2 / LOUT2 应全为 On
+
+# 3. 功放使能脚: 播放中必须 hi, 且要确认该脚真的接功放 (对照可用 BSP!)
+grep spk /sys/kernel/debug/gpio
+
+# 4. codec 输出级供电: 播放中 0x3c (Out1+Out2 全开);
+#    0xc0=空闲, 0x30=只有耳机 Out1 (喇叭分支没供上电)
+i2cget -f -y 7 0x11 0x04                         # ES8388 DACPOWER
+
+# 5. 音量寄存器: Output 1/2 Playback Volume 应非 0
+amixer -c0 contents | grep -A4 "Output.*Playback Volume"
+```
+
+　　第一层修复 (Ubuntu rootfs, wireplumber 行为与内核无关, 重刷要重装):
+
+`/usr/local/bin/aio3588sg-speaker-fix.sh`:
+
+```
+#!/bin/sh
+# 等 wireplumber 起来, 其路由应用完成后重新拉回 Speaker pin
+i=0
+while [ $i -lt 60 ]; do
+  pgrep -x wireplumber >/dev/null && break
+  sleep 1
+  i=$((i+1))
+done
+sleep 5
+amixer -c0 cset name="Speaker Switch" on
+```
+
+`/etc/systemd/system/aio3588sg-speaker-fix.service`:
+
+```
+[Unit]
+Description=AIO-3588SG: re-enable Speaker DAPM pin after PipeWire route selection
+After=multi-user.target
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/aio3588sg-speaker-fix.sh
+RemainAfterExit=yes
+[Install]
+WantedBy=multi-user.target
+```
+
+```
+chmod +x /usr/local/bin/aio3588sg-speaker-fix.sh
+systemctl daemon-reload && systemctl enable --now aio3588sg-speaker-fix.service
+```
+
+　　第二层修复: dts 里 spk-con-gpio 改回 GPIO1_C0 (见 3.1/3.2), 重编
+DTB 烧录。排查写入者可用临时 systemd 单元跑 `alsactl monitor hw:0`
+(注意必须 hw:N 格式), journal 时间戳对 journalctl 定位进程。
+
+　　附注: 插耳机后 wireplumber 正常把 Speaker pin 切 off (喇叭静音,
+耳机出声), 是预期行为, 勿当 bug。

@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
+/*
+ * Copyright (c) 2023 Rockchip Electronics Co., Ltd.
+ *
+ */
+/dts-v1/;
+#define rk3588
+
+#define FF_LEDS
+#define FF_PCA953X
+#define FF_RECOVERY_KEY
+#define FF_SDCARD
+#define FF_GMAC0
+#define FF_GMAC1
+#define FF_SATA0
+#define FF_USB20_HOST0
+#define FF_USB20_HOST1
+#define FF_USB30
+#define FF_ES8388
+#define FF_RTC
+#define FF_WIFI_BT
+#define FF_SW3203
+#define FF_TYPEC_FULL
+#define FF_PCIE3_X4
+#define FF_4G_5G_MODULE
+#define FF_FAN
+#define FF_RS232
+#define FF_RS485
+#define FF_CAN1
+#define FF_HDMI0
+#define FF_HDMI1
+#define FF_VGA
+#define FF_HDMIRX
+//#define FF_DSI0_V3
+#define FF_DSI1_V3
+#define FF_CAM_IMX415
+
+#include "rk3588-firefly-itx-3588j.dtsi"
+
+/ {
+	model = "Firefly ITX-3588J";
+	compatible = "rockchip,itx-3588j", "rockchip,rk3588";
+};
