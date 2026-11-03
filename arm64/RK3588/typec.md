@@ -486,3 +486,162 @@ cat /sys/class/power_supply/*-battery/status     # Charging/Discharging
 #    充电芯片拒绝启动
 # 5. PD 只协商 5V: sink-pdos 最高档与输入能力不匹配
 ```
+
+## 6. 实战实录: DP altmode 协商成功但无画面 (aio-3588l, 2026-11-03)
+
+　　AIO-3588L (rk3588_6.12.69_sdk, 6.12.81 内核) TypeC0 口经 USB-C→DP
+转接器 (Fresco Logic FL7102 billboard, 自带 USB2 hub) 接 DP 触摸屏
+(WingCoolTouch): PD 全程走通、DP altmode 成功进入、转接器的 USB hub /
+billboard / 触摸屏全部正常枚举, 但 `card0-DP-1` 恒 disconnected、屏无
+画面。最终根因是 usb-c-connector 的 OF 图缺一条通往 dp0 的边, 与引脚
+移植完全无关。本节记录完整排查链、机制、修复与三个大坑。
+
+### 6.1 排查链 (逐层证明, 断点在最后一层)
+
+　　先打开调试再插拔一次 (动态调试重启后失效, 需重开):
+
+```
+# 1) 角色/方向实时值
+cat /sys/class/typec/port0/{power_role,data_role,orientation}
+# 实测: [source] / [host] / normal   (板子正确做了 SRC/DFP-D)
+
+# 2) PD 信令全程回放 (核心证据; debugfs 文件只能 cat 不能 pull)
+cat /sys/kernel/debug/usb/tcpm-6-0022/log
+#   SRC_ATTACHED -> Discover Identity/SVIDs/MODES (SVID 0xff01)
+#   -> DFP_TO_UFP_ENTER_MODE ... finished + Rx VDM 0xff01a144 (ACK)
+#   -> Rx VDM 0xff01a150 / 0xff01a151 (DP Status/Config Update)
+#   => PD 与 DP altmode 信令 100% 正常
+
+# 3) 动态调试开 8 个文件 + printk
+echo 'file drivers/usb/typec/tcpm/tcpm.c +p
+file drivers/usb/typec/tcpm/fusb302.c +p
+file drivers/usb/typec/altmodes/displayport.c +p
+file drivers/usb/typec/class.c +p
+file drivers/usb/typec/mux.c +p
+file drivers/usb/typec/bus.c +p
+file drivers/phy/rockchip/phy-rockchip-usbdp.c +p
+file drivers/gpu/drm/rockchip/dw-dp.c +p' > /sys/kernel/debug/dynamic_debug/control
+echo 7 > /proc/sys/kernel/printk
+```
+
+　　插屏后逐层对证据:
+
+| 环节 | 证据 | 结论 |
+|---|---|---|
+| usbdp phy mux 回调 | dmesg `received DP status: 0x0000008a, conf: 0x00000406, mode:4` | 被调用; lane 配置已下发; status bit1 = HPD 已由转接器替屏拉起 |
+| dw-dp debugfs | `cat /sys/kernel/debug/dri/0/dw-dp0/dp_status` => `usbdp hpd: yes / hpd status: unplug` | dw-dp 认为没插屏 |
+| dw-dp mux 回调 | dw-dp.c 的 `hotplug from the usbdp` 等 dbg 一条不出现 | **未被调用 => 断点在这** |
+| mux 设备 | `ls /sys/class/typec_mux/` => `fed80000.phy-mux` + `fde50000.dp-mux` 都在 | dp 的 mux 注册了, 但无人调用 |
+| connector | `cat /sys/class/drm/card0-DP-1/status` => disconnected | 无 EDID, 无画面 |
+| billboard | usb 总线恒枚举 `1d5c:7102 Generic Billboard` | 转接器认为 DP 未建立 (billboard 只在 DP 配置未成功时保持枚举) |
+
+### 6.2 机制与根因
+
+　　6.12 的 dw-dp 节点带 `mode-switch` 属性时 (dw_dp_probe):
+- 注册自己的 typec mux (`dw_dp_setup_typec_mux`, 设备名
+  `fde50000.dp-mux`), 并置 `dp->usbdp_hpd = true`
+- 此模式下 HPD 的**唯一软件路径**是它的 mux 回调
+  `dw_dp_typec_mux_set()`: 更新 `dp->hotplug.status` + schedule hpd_work
+- usbdp phy 写的 vo-grf bits[11:10] (hpd_trigger) 是 PHY 层 sink HPD
+  配置选择, dw-dp 软件不消费, 替代不了这条路径
+
+　　而 typec core 给 altmode 挑 mux 的方式 (typec_port_register_altmode
+-> typec_mux_get(&port->dev) -> fwnode_connection_find_matches): **沿
+usb-c-connector 的 OF 图逐边收集远端设备中带 `mode-switch` 属性者**
+(非递归, 上限 TYPEC_MUX_MAX_DEVS=3), typec_mux_set() 把整个集合挨个调
+一遍。原有图只有两条边:
+
+```
+connector port@0 <-> usbdp_phy0_orientation_switch   (orientation-switch)
+connector port@1 <-> usbdp_phy0_dp_altmode_mux       (mode-switch, 命中)
+```
+
+　　dp0 虽带 mode-switch 属性且 mux 已注册, 但**不在 connector 图里**,
+永远进不了集合 => `dw_dp_typec_mux_set()` 无人调用 => `hotplug.status`
+恒 false => HPD unplug。修复 = 给 connector 图补一条边直达 dp0 节点
+(typec 匹配只要求走到带 mode-switch 的节点, 不关心挂在 dp0 哪个 port)。
+
+　　版本对照 (解释"为什么别处没这问题"): 引脚三方一致 (5.10/6.1/6.12
+逐项核对过); 6.1 官方 aio dtsi **根本没启用 &dp0** —— 不存在"以前能
+亮"的基准, 6.12 是首次把 dp0 挂上 TypeC0; usbdp phy 的 mux 回调两版
+等价; dw-dp 的 HPD 路径两版也等价; 6.12 的 typec_mux_match 是新版
+(只查 mode-switch 属性, 旧版按 svid 匹配)。
+
+### 6.3 修复 dts (aio-3588l.dtsi, 已验证出画面 + 触摸)
+
+```
+&i2c6 {
+	usbc0: fusb302@22 {
+		...
+		usb_con: connector {
+			...
+			ports {
+				port@0 { /* usbc0_orien_sw -> usbdp_phy0_orientation_switch */ };
+				port@1 { /* dp_altmode_mux -> usbdp_phy0_dp_altmode_mux */ };
+
+				port@2 {                          /* 新增 */
+					reg = <2>;
+					usbc0_dp0_mux: endpoint {
+						remote-endpoint = <&dp0_typec_mux>;
+					};
+				};
+			};
+		};
+	};
+};
+
+/* dp0 新增 port@2 与 connector 互指 (为何不用 port@1: 见 6.4 坑一) */
+&dp0 {
+	ports {
+		port@2 {
+			reg = <2>;
+			dp0_typec_mux: endpoint {
+				remote-endpoint = <&usbc0_dp0_mux>;
+			};
+		};
+	};
+};
+```
+
+　　修复后事件时序 (mux 集合按图上 port 序号顺序调用, lane 切换先于
+HPD): altmode notify -> [phy-mux] lane 切 DP + mode_change -> [dp-mux]
+hotplug.status=true + hpd_work -> connector connected -> dw-dp enable ->
+usbdp phy 重新 setup 消费 mode_change (lane mux 写硬件) -> link
+training -> 出画面。
+
+### 6.4 三个大坑
+
+　　1. **图边不能挂 dp0 的 port@1。** port@1 是 DRM 下游端口,
+`dw_dp_bridge_attach()` -> `drm_of_find_panel_or_bridge(dp0, port=1)`
+拿它找 panel/next bridge; 连到 connector (两者都不是) 会返回
+-EPROBE_DEFER(-517), 启动报 `dw-dp fde50000.dp: failed to attach bridge:
+-517`, dw-dp 直接 probe 失败。第一版修复就栽在这。正解: dp0 新增
+port@2, port@1 (dp0_out) 保持空。
+
+　　2. **USB-A→C 烧录线插 TypeC0 是 SNK 死循环, 勿误判。** A→C 线在
+C 端拉 Rp, 板子 (DRP) 识别为 SNK attach 后等 Source_Capabilities, A 口
+永不发 PD => HARD_RESET 循环 => 超时停留 5V, 无害。识别特征: 插入后
+dmesg 有 `charger = USB_SDP_CHARGER` + gadget 枚举 (USB_STATE=
+CONFIGURED)。tcpm log 里的 SNK+HARD_RESET 若发生在烧录线插入时, 与
+DP 转接器无关 —— 排查 DP 时曾被它带偏一轮。
+
+　　3. **probe 顺序竞争 (潜在, 本板未触发)。** 补边后 typec_mux_get
+要求 `fde50000.dp-mux` 已注册; 若 fusb302 probe 早于 dw-dp, altmode
+注册会 defer 且 vendor tcpm 忽略返回值不重试 => PD 正常但 altmode 不
+协商。识别: tcpm log 里 PD 走完但没有 ENTER_MODE。若遇到: 让 dw-dp
+probe 提前, 或内核侧给 altmode 注册补 defer 重试。
+
+### 6.5 验证
+
+```
+# 启动阶段: 不得出现 failed to attach bridge
+dmesg | grep -E "dw-dp|attach bridge"
+
+# 插 DP 转接器 + 屏后:
+cat /sys/class/drm/card0-DP-1/status        # => connected
+dmesg | grep "hotplug from the usbdp"       # dw-dp mux 回调出现
+dmesg | grep 1d5c                           # billboard 不再枚举 (DP 成功后撤下)
+
+# 最终状态 (2026-11-03 实测): 显示 + WingCoolTouch 触摸全部正常
+modetest -M rockchip -c                     # DP-1 connected
+```

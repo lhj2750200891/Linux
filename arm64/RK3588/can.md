@@ -173,6 +173,28 @@ mcp2518fd@0, INT = GPIO4_D1 (IRQ_TYPE_LEVEL_LOW), 写法对称。
 ## 5. 验证测试
 
 ```
+# 内部回环测试
+ifconfig -a
+ip link set can0 down
+ip link set can0 type can bitrate 500000 loopback on
+ip link set can0 up
+ip -details link show can0
+candump can0 &
+cansend can0 123#DEADBEEF
+ip -details -s link show can0
+
+# 接导板(要接地线)
+ip link set can0 down
+ip link set can0 type can bitrate 250000 loopback off
+ip link set can0 up
+candump can0 & 
+cansend can0 123#1122334455667788
+ip -details -s link show can0
+```
+
+
+
+```
 # 1. 接口出现 (内置 canX / 外挂 spi 模式统一都是 canX)
 ip link show                      # 应看到 can0/can1/can2
 dmesg | grep -i -E "can|mcp2518"

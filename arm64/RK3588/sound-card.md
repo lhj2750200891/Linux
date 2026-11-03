@@ -369,6 +369,14 @@ wifi-bt 模块, 两者都配上 SCO 语音通路才通。
 ## 6. 验证测试
 
 ```
+# 切换音频默认声卡
+runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl status    # 找sinks里面的标号
+runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl set-default 58   # 比如想设置dp的声卡,编号是58
+```
+
+
+
+```
 # 1. 声卡注册
 cat /proc/asound/cards
 # 应看到 ES8388: rockchip-es8388 ... / ES8390: rockchip-es8390 ...

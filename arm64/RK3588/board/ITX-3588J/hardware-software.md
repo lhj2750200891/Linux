@@ -542,6 +542,7 @@ echo test  > /dev/ttyS1
 
 ```
 CAN1 ===> CAN1_M1 (can1m1_pins), 时钟 200MHz
+注意: 全板仅此一个 CAN 启用(dtb 确认只有 fea60000 okay), netdev 按探测顺序命名为 can0 而非 can1!
 ```
 
 ### 设备树配置
@@ -560,9 +561,17 @@ CAN1 ===> CAN1_M1 (can1m1_pins), 时钟 200MHz
 ### 测试指令
 
 ```
-ip link set can1 type can bitrate 500000 && ip link set can1 up
-candump can1 &
-cansend can1 123#DEADBEEF
+# netdev 名是 can0(节点名 can1@fea60000), ip -details link show can0 可见 parentdev fea60000.can
+ip link set can0 down && ip link set can0 type can bitrate 500000 loopback on && ip link set can0 up
+candump can0 &
+cansend can0 123#DEADBEEF
+
+# 接导板(要接地线)
+ip link set can0 down
+ip link set can0 type can bitrate 250000 loopback off
+ip link set can0 up
+candump can0 & 
+cansend can0 123#1122334455667788
 ```
 
 ## VGA (DP1 + IT6516)
@@ -802,3 +811,99 @@ cat /sys/class/backlight/*/brightness
 cat /proc/bus/input/devices | grep -A4 -iE "goodix|himax"
 dmesg | grep -iE "dsi|panel|goodix|himax"
 ```
+
+## HDMI-IN 有声无图修复 (2026-11-03, QA 脚本 rockchip-hdmi-in-display.t)
+
+### 现象
+
+QA 的 HDMI-IN 测试项:**音频正常、画面无输出**。手动 gst-launch 直写图层反复 EINVAL;
+期间还出现过"屏上跑厂测 → 厂测界面冻死、鼠标消失"(桌面被误停)。
+
+### 根因(四层,逐层排除)
+
+1. **QA 脚本给 glimagesink 传 `plane-id/connector-id/zpos` 属性** —— 这是老 BSP(补丁版
+   gst-plugins-base)才有的属性;本镜像(Ubuntu 24.04, stock gst 1.24.2)的 glimagesink 没有
+   → 视频管线起不来(`erroneous pipeline: could not set property`),音频管线独立不受影响
+   → 症状"有声无图"。新 SDK 官方补丁(`debian/packages-patches/gstreamer1/`)也只在
+   **kmssink**(gst-plugins-bad)里做图层选择(zpos/plane selection),glimagesink 路线已被官方抛弃。
+2. **GNOME 桌面持 DRM master**(mutter 经 systemd-logind)→ 桌面活着时一切外部直写图层
+   (kmssink/modetest/drmModeSetPlane)全被拒(EINVAL,参数再对也没用)。`/sys/kernel/debug/dri/0/clients` 可查 master 持有者。
+3. **Cluster0 层(plane 156)有 mutter 残留状态**,停 gdm 后仍不可用;**Esmart0(plane 59)可用**。
+   VP0(HDMI-A-1)只有 Esmart0 + Cluster0 两个层。
+4. **桌面菜单启动厂测时,测试与桌面同 systemd session** → 测试里 stop gdm3 会把合成器一并杀掉
+   → 屏幕冻在桌面最后一帧、鼠标消失(Wayland 无合成器无光标)、视频被压在冻帧图层下
+   → "既没画面又点不动"。**桌面活着时永远不要停桌面。**
+
+### 排查中的坑(防再踩)
+
+- `journalctl -u gdm3` 在本镜像**全时段恒空**,不能用它判断 gdm 是否停过。
+- 本镜像 `v4l2-ctl --list-devices` 往 stderr 吐 `Cannot open device /dev/video0, exiting.`
+  (盲扫 video0-63,节点从 video20 起)。**纯噪音**,解析结果其实正确(/dev/video20);
+  全量日志 `Could not open device` 计 0 次,别被这行骗了。
+- 板上 QA 部署树是 `/var/cache/firefly/proj/`,**根目录平铺的 .t 才是实际执行的**
+  (根目录自带 lib/ sharness 框架),`test_proj/` 只是副本 —— 只换 test_proj 不生效。
+  `proj.tar.gz` 仅在 proj/ 不存在时才解包(start.sh 有 `[ -d proj ]` 守卫),不会覆盖已部署文件。
+- 判定抓现行用 `ps -eo pid,user,args | grep gst-launch`,日志是 `>>` 追加的,
+  分析要看"新追加段"而不是全文。
+- HDMI-IN 透传物理上必须两头接线:RX 口接信号源 + HDMI0 接显示器。
+
+### QA 脚本最终修改(三路自适应,md5=bf832428)
+
+判据链:`gst-inspect-1.0 glimagesink | grep -q plane-id`(分新老固件)→ `pgrep -x gnome-shell`(分桌面/无桌面)。
+
+```bash
+if gst-inspect-1.0 glimagesink 2>/dev/null | grep -q plane-id; then
+    # 老固件(BSP 补丁版 glimagesink 有 plane-id):原脚本逐字节原样,Cluster 层推导保留
+    video_sink="glimagesink plane-id=$plane_id connector-id=$Connector_id zpos=11"
+elif pgrep -x gnome-shell >/dev/null 2>&1; then
+    # 新固件+桌面活着:普通 glimagesink 在桌面开窗口播,不碰 DRM master(菜单/鼠标不受影响)
+    qa_uid=$(ps -o uid= -p $(pgrep -x gnome-shell | head -1) | tr -d ' ')
+    qa_xauth=$(ls /run/user/$qa_uid/gdm/Xauthority /run/user/$qa_uid/.mutter-Xwaylandauth.* 2>/dev/null | head -1)
+    QA_DESKTOP_ENV="DISPLAY=:0 GDK_BACKEND=x11"
+    [ -n "$qa_xauth" ] && QA_DESKTOP_ENV="$QA_DESKTOP_ENV XAUTHORITY=$qa_xauth"
+    [ -d /run/user/$qa_uid ] && QA_DESKTOP_ENV="$QA_DESKTOP_ENV XDG_RUNTIME_DIR=/run/user/$qa_uid"
+    video_sink="glimagesink"
+else
+    # 无桌面(串口/无屏产线):直写 Esmart 层,临时停桌面拿 DRM master,测完恢复
+    plane_id=$(sudo cat /sys/kernel/debug/dri/0/state | grep plane | grep $Esmart_name | awk -F ' ' {'print $1'} | tr -cd "0-9")
+    video_sink="kmssink connector-id=$Connector_id plane-id=$plane_id"
+    systemctl is-active gdm3 >/dev/null 2>&1 && { sudo systemctl stop gdm3; sleep 3; QA_HDMIIN_STOPPED_GDM=1; }
+fi
+
+env $QA_DESKTOP_ENV gst-launch-1.0 v4l2src device=$device_id ! "video/x-raw,width=$hdmi_in_width,height=$hdmi_in_height,format=$hdmi_in_format" ! fpsdisplaysink video-sink="$video_sink" sync=false text-overlay=false >>$log_file 2>&1 &
+```
+
+配套:cleanup_hdmi_in 尾部加 `[ "$QA_HDMIIN_STOPPED_GDM" = 1 ] && sudo systemctl start gdm3`
+(只恢复自己停的桌面;老固件/窗口模式该变量不置位,连 systemctl 都不碰)。
+root 连桌面会话的关键:`/run/user/1000/gdm/Xauthority` 在新镜像已不存在,
+实际有效的是 `/run/user/<uid>/.mutter-Xwaylandauth.*`,拿 gnome-shell 进程的 uid 动态找。
+QA 的判定是人眼 `test_confirm_pass_by_user`(Enter=过,'-'=不过),换 sink 不影响判定逻辑。
+
+### 部署位置(三处必须一致)
+
+| 位置 | 路径 |
+|---|---|
+| 主机 QA 仓库(源头) | `/media/lhj/data/t-chip/7.code/linux-qa/test_proj/rockchip-hdmi-in-display.t` |
+| 板上实际执行 | `/var/cache/firefly/proj/rockchip-hdmi-in-display.t` |
+| 板上副本 | `/var/cache/firefly/proj/test_proj/rockchip-hdmi-in-display.t` |
+
+三处 md5 一致(bf832428),`bash -n` 语法过。改完用 `grep -c QA_HDMIIN_STOPPED_GDM` 快速确认新版在位。
+
+### 手工验证路线(不跑 QA 时用)
+
+```bash
+# 窗口模式(桌面运行时,画面为桌面窗口)
+env DISPLAY=:0 GDK_BACKEND=x11 XAUTHORITY=$(ls /run/user/1000/.mutter-Xwaylandauth.* | head -1) \
+    gst-launch-1.0 v4l2src device=/dev/video20 ! 'video/x-raw,width=3840,height=2160,format=NV12' \
+    ! fpsdisplaysink video-sink=glimagesink sync=false text-overlay=false
+# 无桌面直显(systemctl stop gdm3 后)
+gst-launch-1.0 v4l2src device=/dev/video20 ! 'video/x-raw,width=3840,height=2160,format=NV12' \
+    ! kmssink connector-id=227 plane-id=59
+# id 动态取: connector: modetest -M rockchip -c | grep HDMI-A-1
+#            plane:    /sys/kernel/debug/dri/0/state 的 "plane[N]: Esmart0-win0"
+```
+
+### 结果
+
+2026-11-03 板上验证:屏幕菜单启动厂测,HDMI-IN 画面以窗口形式正常输出,菜单/鼠标不受影响,**QA 测试通过**。
+老固件分支保持原样(逐字节),串口/无桌面场景走 kmssink 直写(实测出图)。

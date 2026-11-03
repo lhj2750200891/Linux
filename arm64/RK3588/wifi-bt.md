@@ -563,3 +563,134 @@ rfkill list                                       // 查看/解除软硬阻塞
 # 7. rtk_btusb 加载即报错: 内核开了 CONFIG_BT_HCIBTUSB, 自带 btusb
 #    抢绑了设备, 关掉重编 (脚本会提示 "Please disable ... in kernel!")
 ```
+
+## 7. 实战复盘: ITX-3588J "蓝牙打不开" (2026-11-03 已修复验证)
+
+现象: 开机后 hci0 能起来, 但开机 1~2 分钟后所有 HCI 命令 -110 超时
+(0x0C1A/0x0C03/0x0401), 蓝牙彻底打不开; 厂测(linux-qa bluetooth-001)失败。
+
+### 7.1 根因链 (四层叠加)
+
+```
+厂测 rfkill block bluetooth  (或 guardian 瞬态 block)
+    ↓ systemd-rfkill 的 12s 事件窗恰好截到 blocked 态
+/var/lib/systemd/rfkill/platform-wireless-bluetooth:bluetooth 被写成 "1\n"
+    ↓ 下次开机 ~1-2min 后 systemd-rfkill.socket 被 /dev/rfkill 打开触发
+守护进程回放 blocked 态 → rfkill0 硬 block → BT_REG_ON 拉低 → 芯片断电
+    ↓ hci0 还注册着, 每条 HCI 命令超时
+rfkill-bt.c 收到 block → hci_dev_do_poweroff → write_scan_enable/Reset 全 -110
+    ↓
+旧版 wifibt-init.sh 的 BT guardian 被 bash -e 静默杀死(任一命令失败即退),
+彻底无人救治 → 蓝牙永久打不开
+```
+
+要点:
+- AP6275P 固件在 RAM: **BT_REG_ON 任何一次掉电都会清掉固件**, 恢复必须重新
+  patchram 下载(实测 4~8s, 不可能 2s 内完成)。
+- systemd-rfkill 是 socket 激活的, 开机后任何 /dev/rfkill 打开都会唤醒它回放
+  保存态; guardian 重初始化时的瞬态 block 正好喂给它存下来 → 跨重启毒化闭环。
+- `#!/bin/bash -e` + guardian 循环体里无保护的失败命令 = guardian 静默死亡,
+  这才是"永远打不开"的直接原因。
+
+### 7.2 修复 (external/rkwifibt/scripts/wifibt-init.sh, 已同步 SDK)
+
+1. **屏蔽毒源**: `systemctl mask systemd-rfkill.service systemd-rfkill.socket`,
+   脚本里新增 `scrub_bt_rfkill_save`(init 成功后把保存的 BT 态改写回 "0\n"),
+   双保险。
+2. **guardian 重写为单循环**:
+   - 外部 rfkill block (state != 1) = 有意关断 → **挂起不动手**(不 killall、
+     不重初始化、不对抗), 否则会把厂测期间的 hci0 拆没;
+   - 健康 = hci0 存在 && `hciconfig hci0` 含 UP && rfkill==1 (旧代码拿 state==0
+     当健康, 反了);
+   - hci0 DOWN 时先温柔 `hciconfig hci0 up`(毫秒级断电固件常幸存, <100ms 恢复),
+     失败才全量重初始化(REG_ON bounce + 重下载), 并 debounce 1s 防止把
+     bluetooth_switch_test 的 0.2s up/down 当故障;
+   - 循环体全部 `|| true`, bash -e 杀不死。
+3. **AMPAK patchram 时序两坑**:
+   - hci0 在下载中途就注册, `wait_bt` 立刻返回 → guardian 把好端端的下载拆掉
+     (旧版"永远在重连"churn 的机制); 必须等日志出现
+     `Done setting line discpline`(patchram --enable_hci 后打, 注意拼写就是
+     discpline)再认为下载完;
+   - marker 后补丁段还要走 ldisc 传 1~3s (`--use_baudrate_for_download`),
+     立刻 `hciconfig hci0 up` 会失败并又拆掉一次; 用 2s 步进重试 8 次。
+   - `--patchram` 参数给目录必须带尾斜杠 `/lib/firmware/brcm/`, AMPAK 自动
+     检测按 目录/文件 两种方式解析。
+4. **fallback 顺序**: `brcm_patchram_plus1 --enable_hci --no2bytes
+   --use_baudrate_for_download --tosleep 200000 --baudrate 1500000 --patchram
+   $fw_dir/ $tty` 优先(AP6275P 上 hciattach bcm43xx 下载后首条命令必超时),
+   hciattach 兜底。
+
+### 7.3 厂测 (linux-qa bluetooth-001-check-and-scan.t)
+
+测试自己 `rfkill block`+`unblock` 会真断电清固件, 旧版只 sleep 2 就查
+hciconfig —— UART 蓝牙物理上不可能 2s 内恢复。已在测试中加 `bt_wait_exist`/
+`bt_wait_ready` 轮询(预算 40s), ITX-3588J 实测 5/5 全过(含扫描发现 6 设备)。
+任何 UART BT 板(各 AP6xxx/AIC 型号)同理。
+
+### 7.4 验证结论 (ITX-3588J, 6.12.69)
+
+- 冷开机: ~3s 内 hci0 UP, hcitool scan RC=0, 单 patchram 进程无 churn;
+- rfkill block 3s 深断电 → unblock → guardian 全量重下载 → 15s 内 scan RC=0;
+- 厂测 5 项全过; 手机能配对;
+- 板上曾有的坑: 手动复现"断电后 patchram 卡在 proc_reset"是因为缺了
+  do_init_bt 的 btwrite 写入(REG_ON bounce 后 `echo 1 >
+  /proc/bluetooth/sleep/btwrite` 会把 RTS 从 GPIO 态切回 UART 态), 脚本完整
+  路径无此问题。
+- 板上部署: /usr/bin/wifibt-init.sh (备份 .bak-20261103), systemd-rfkill 已
+  mask; 回滚: 还原备份 + `systemctl unmask systemd-rfkill.service
+  systemd-rfkill.socket`。
+
+### 7.5 复盘续: "重启后厂测仍不通过" (v6 → v13, 2026-11-03 下午)
+
+用户重启板子后厂测再次失败 → 连做 4 次冷启动排障, 在 v6 之上又挖出 5 个
+叠加 bug (脚本现为 v13, md5 86236eb1, 板上+SDK 均同步):
+
+1. **killall 15 字符截断 (churn 元凶)**: killall 按内核 comm 匹配, comm 最长
+   15 字符, `brcm_patchram_plus1`(19 字符)截成 `brcm_patchram_pl` → **永远
+   杀不掉**。setsid 的 loader 活着, 新 patchram 与旧 loader 双写 ttyS6 →
+   后续所有下载必烂 → guardian 无限 churn (fx.log 一小时涨 1.4 万行)。
+   修复: `kill_bt_loaders()` = `pkill -9 -f 全命令行` + pgrep 校验循环。
+2. **dispatch 后台化陷阱**: 脚本底部 `start_wifibt "$1" &` 让主脚本秒退:
+   (a) systemd 立刻认为服务已结束; (b) `timeout 40 bash -x script` 形同
+   虚设——后台子进程带着重定向继续写日志, "已结束"的 tail 是快照, 日志
+   还在涨 (10228→13857 行才发现); (c) 服务重启时新旧实例叠着抢 tty。
+   修复: start_wifibt 入口 flock 单例锁 (/var/run/.wifibt-init.lock)。
+3. **rfkill block = 断电, 下载前必须校验**: 本板 rfkill block 直接切 BT 电源。
+   带 block 启动的下载是"静默死亡": 芯片无电 → hci0 永不注册 → loader 卡
+   proc_reset。A/B 实测: block 时 patchram 25s 无 hci0; unblock 后 2s UP。
+   修复: do_init_bt 弹跳后强制 unblock_all; init_bt_brcm_uart 下载前等
+   "state==1 且连续稳定 ~2s" (最多 20s)。
+4. **combo 模组电源时序竞速 (重启偶发挂的原因)**: AP6275P WiFi/BT 共电,
+   WLAN 驱动 (WLAN_RFKILL, poweren gpio) 开机 power-sequencing 会动共享
+   电源 GPIO; BT 下载撞上就被切电 → patchram ~12s 自灭 → "Failed to init
+   BT"。同脚本同固件, 有的 boot 8s 成功有的挂, 纯看竞速 (02:58 好/用户
+   重启挂的原因)。修复: 3 的稳定窗兜住起步, 5 的 residue 处理兜住输了
+   竞速后的自愈 (秒级)。
+5. **guardian 分不清"残留 block"和"有意关断"**: v6 铁则 state!=1 就按住 →
+   开机电源时序留下的 block 让 guardian 按住整场 boot, BT 死到不知何时有
+   外部 actor 把 state 翻回 1 (实测 ~4 分钟)。修复: saw_unblocked 状态
+   机——启动以来从未见过 1 = 开机残留 → 主动清 (清完走正常健康检查→
+   重初始化); 见过 1→0 = 有意关断 (厂测) → 按住不动。
+
+诊断手法 (实测有效):
+- **patchlog mtime = patchram 启动探测器**: 脚本启动 loader 时 `>"$brcm_log"`
+  截断即更新 mtime; mtime 冻结 = 本次 boot 从没启动过下载。
+- bash -x + 后台 dispatch: tail 给的"结尾"只是快照, 先看日志还在不在涨。
+- `grep -c "for i in"` 数 wait_bt 轮询规模, 估算 churn 速度。
+- 抓现行靠 A/B: 同脚本手动 patchram, 只差 rfkill block/unblock。
+- pgrep -f 会自匹配自己的命令行; pgrep -x 对 >15 字符进程名零匹配。
+
+厂测环境注意 (linux-qa): 板上 /tmp 是 tmpfs, 重启即清 (qa 环境/脚本/备份
+都要重传); 测试须 root 跑 (用例内部 sudo 无 TTY 会失败); /tmp/qa 布局:
+.t 在包根目录 + `env.ini -> part/ITX-3588J.ini` + lib/。
+
+v13 验证记录 (2026-11-03, 4 次冷启动):
+- v11 boot: init 输了竞速, guardian 在厂测 unblock 后自愈 → 厂测 6/6——
+  证明"测试 40s 轮询 + guardian 自愈"链路稳, 用户投诉场景已闭环;
+- v13 boot (终版): 开机 8s "Successfully init BT", 零干预, hci0 UP,
+  rfkill 稳定, 单 patchram; 厂测 6/6, 扫描 5 设备。
+- 版本演进 md5: v6 9e9235ae → v8 fe33994a → v9 792d30a5 → v10 6ca89ca6 →
+  v11 66b0a808 → v12 bcc8afb5 → v13 86236eb1。
+- 旧版 btwrite 说明作废补充: 6.12 内核上该板 `/proc/bluetooth/sleep/btwrite`
+  不存在, 弹跳实际全靠 rfkill (echo 0/1 > rfkill0/state)。
+

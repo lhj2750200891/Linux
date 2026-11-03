@@ -354,7 +354,8 @@ PD sink 仅 5V/1A, source 5V/3A
 			source-pdos = <PDO_FIXED(5000, 3000, PDO_FIXED_USB_COMM)>;
 			altmodes { altmode@0 { svid = /bits/ 16 <0xff01>;
 				vdo = <0xffffffff>; } };
-			ports { /* orien_sw -> usbdp_phy0, dp_mux -> dp_altmode_mux */ };
+			ports { /* port0 orien_sw / port1 dp_mux -> usbdp_phy0,
+				port2 -> dp0 (HPD 边, 2026-11-03 修复, 见 DP0 修复实录) */ };
 		};
 	};
 };
@@ -391,8 +392,9 @@ route_dp0 / dp0 音频 (spdif_tx2) 位于 common FF_DP0 段
 ### 设备树配置
 
 ```
-// 板级无额外配置; common 中:
-// &dp0 { status = "okay"; }  &dp0_in_vp2 { status = "okay"; } ...
+// 板级修复 (2026-11-03): connector 与 dp0 各加 port@2 互指, 见 DP0 修复实录
+// common FF_DP0 段中: &dp0 { mode-switch; status = "okay"; }
+//   &usbdp_phy0 { mode-switch; ... }  &dp0_in_vp2 { status = "okay"; }
 ```
 
 ### 测试指令
@@ -400,6 +402,86 @@ route_dp0 / dp0 音频 (spdif_tx2) 位于 common FF_DP0 段
 ```
 cat /sys/class/drm/*/status
 modetest -M rockchip -c        # DP-1 出现即可
+
+# 切换音频默认声卡
+runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl status    # 找sinks里面的标号
+runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl set-default 58   # 比如想设置dp的声卡,编号是58
+
+
+# 播放视频
+sudo -u firefly XDG_RUNTIME_DIR=/run/user/1000 gst-play-1.0 4K_H264_bird.mp4
+```
+
+## DP0 修复实录 (2026-11-03: connector 图缺 dp0 边 => HPD 恒 unplug)
+
+### 现象与排查
+
+　　6.12.81 内核, TypeC0 经 FL7102 转接器 (billboard) 接 DP 触摸屏
+(WingCoolTouch): PD 全程走通 (DFP_TO_UFP_ENTER_MODE ACK), usbdp phy
+收到 DP status (0x8a, HPD bit 已置位, lane 配置已下发), 但
+card0-DP-1 恒 disconnected, billboard (1d5c:7102) 恒枚举。
+
+```
+cat /sys/kernel/debug/usb/tcpm-6-0022/log   # PD 全程回放, Enter Mode ACK
+dmesg | grep "received DP status"           # usbdp phy 回调正常 (ddebug)
+cat /sys/kernel/debug/dri/0/dw-dp0/dp_status
+#   usbdp hpd: yes / hpd status: unplug    <- 断点: dw-dp 的 mux 从未被调
+ls /sys/class/typec_mux/                    # fde50000.dp-mux 注册了但没人调
+dmesg | grep "hotplug from the usbdp"       # dw-dp mux 回调: 一条不出现
+```
+
+### 根因
+
+　　dw-dp 节点带 mode-switch 时, HPD 唯一软件路径 = 它自己注册的
+typec mux 回调 (dw_dp_typec_mux_set, 设备 fde50000.dp-mux); 而 typec
+core 按 usb-c-connector 的 OF 图收集 mode-switch 设备 (非递归, 上限
+3 个), 原图只有 connector<->usbdp_phy0 两条边, dp0 不在图中 =>
+无人调用 => hotplug.status 恒 false => HPD unplug。usbdp 写的
+vo-grf bits[11:10] 是 PHY 层配置, dw-dp 软件不消费, 替代不了。
+引脚移植三方一致 (5.10/6.1/6.12) 无罪; 6.1 官方 dtsi 根本没启用
+&dp0, 不存在"以前能亮"的基准。
+
+### 设备树修复
+
+```
+// 板级 aio-3588l.dtsi: connector ports 加 port@2, dp0 加 port@2, 互指
+				port@2 {
+					reg = <2>;
+					usbc0_dp0_mux: endpoint {
+						remote-endpoint = <&dp0_typec_mux>;
+					};
+				};
+};
+
+&dp0 {
+	ports {
+		port@2 {
+			reg = <2>;
+			dp0_typec_mux: endpoint {
+				remote-endpoint = <&usbc0_dp0_mux>;
+			};
+		};
+	};
+};
+```
+
+　　大坑: ① 边不能挂 dp0 的 port@1 (DRM 下游端口,
+drm_of_find_panel_or_bridge 对非 panel/bridge 的 remote 返回
+-EPROBE_DEFER, 启动报 "failed to attach bridge: -517", dw-dp probe
+失败); ② USB-A→C 烧录线插 TypeC0 是 SNK 死循环 (A→C 线 C 端拉 Rp,
+板子等不到 PD, HARD_RESET 循环后停 5V, 正常行为勿误判); ③ 补边后
+typec_mux_get 要求 fde50000.dp-mux 已注册, fusb302 若早于 dw-dp
+probe 则 altmode 注册 defer 不重试 (潜在, 本板未触发)。
+详细机制/排查链见 typec.md 第 6 节。
+
+### 测试指令
+
+```
+dmesg | grep -E "dw-dp|attach bridge"       # 启动: 无 -517
+cat /sys/class/drm/card0-DP-1/status        # 插屏后: connected
+dmesg | grep "hotplug from the usbdp"       # dw-dp mux 回调出现
+dmesg | grep 1d5c                           # billboard 不再枚举 (DP 成功后撤下)
+# 2026-11-03 实测: 显示 + WingCoolTouch 触摸全部正常
 ```
 
 ## M.2 槽 (SATA0 默认开 / PCIE2_1L2 默认关, 复用)

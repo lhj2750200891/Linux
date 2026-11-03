@@ -24,7 +24,7 @@ roc-rk3588s-pc / robotic-evb-v11) 的设备树配置, 供自研板移植参考�
 | HDMI | [hdmi.md](hdmi.md) | 单口 / itx 双口 + HDMI RX | 2026-10-29 |
 | MIPI CSI 摄像头 | [mipi-csi.md](mipi-csi.md) | IMX415 全链路 + 双摄 CAM0/CAM1 切换 | 2026-10-29 |
 | MIPI DSI 屏 | [mipi-dsi.md](mipi-dsi.md) | MIPI 屏完整序列+触摸+在位检测 / LT9211D 转 LVDS | 2026-10-29 |
-| Type-C | [typec.md](typec.md) | 全功能 (PD 充电+DP) / 非全功能 (仅 OTG+DP) | 2026-10-29 |
+| Type-C | [typec.md](typec.md) | 全功能 (PD 充电+DP) / 非全功能 (仅 OTG+DP), 含 DP 无画面实战排查 (connector 图缺 dp0 边) | 2026-10-29 / 排查 2026-11-03 |
 | USB2.0 | [usb20.md](usb20.md) | usb_host0/1 口, u2phy 冲突说明 | 2026-10-29 |
 | USB3.0 | [usb30.md](usb30.md) | Type-A 5Gbps 口 + 一扩四场景 | 2026-10-29 |
 | CAN | [can.md](can.md) | 内置 can1/can2 + SPI MCP2518FD | 2026-10-29 |

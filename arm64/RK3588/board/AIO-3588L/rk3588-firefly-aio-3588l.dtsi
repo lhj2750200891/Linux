@@ -492,6 +492,28 @@
 						remote-endpoint = <&usbdp_phy0_dp_altmode_mux>;
 					};
 				};
+
+				port@2 {
+					reg = <2>;
+					usbc0_dp0_mux: endpoint {
+						remote-endpoint = <&dp0_typec_mux>;
+					};
+				};
+			};
+		};
+	};
+};
+
+// Type-C DP altmode HPD 路由 (2026-11-03 修复): typec core 按 connector
+// OF 图收集 mode-switch mux, 缺此边则 dw_dp_typec_mux_set() 无人调用,
+// HPD 恒 unplug。dp0 用新增 port@2 (port@1 是 DRM 下游端口, 必须保持空,
+// 否则 drm_of_find_panel_or_bridge 返回 -EPROBE_DEFER 致 dw-dp probe 失败)。
+&dp0 {
+	ports {
+		port@2 {
+			reg = <2>;
+			dp0_typec_mux: endpoint {
+				remote-endpoint = <&usbc0_dp0_mux>;
 			};
 		};
 	};
