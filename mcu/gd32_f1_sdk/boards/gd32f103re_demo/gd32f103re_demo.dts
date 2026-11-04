@@ -1,0 +1,41 @@
+/*
+ * gd32f103re_demo.dts —— 演示板设备树
+ *
+ * 与 gd32f103re 板共用 SoC 级 dtsi(同一颗芯片), 只描述本板自己的硬件:
+ *   2 个 LED(PB0/PB1)、1 个按键(PA0), 没有矩阵键盘(设备树里就没有该节点)。
+ * 配合 configs/gd32f103re_demo_defconfig 使用 (make lunch BOARD=gd32f103re_demo)。
+ */
+
+/dts-v1/;
+
+#include "gd32f103re.dtsi"
+
+/ {
+	model = "GD32F103RE demo board";
+	compatible = "gd,gd32f103re-demo";
+
+	leds {
+		compatible = "gd,gpio-leds";
+		count = <2>;
+
+		led1 {
+			gpios = <&gpiob 0 GD32_MODE_OUT_PP>;
+			init-level = <0>;
+		};
+
+		led2 {
+			gpios = <&gpiob 1 GD32_MODE_OUT_PP>;
+			init-level = <0>;
+		};
+	};
+
+	keys {
+		compatible = "gd,gpio-keys";
+		count = <1>;
+
+		key1 {
+			gpios = <&gpioa 0 GD32_MODE_IPU>;
+			active-level = <0>;
+		};
+	};
+};

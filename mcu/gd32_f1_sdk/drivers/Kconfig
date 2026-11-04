@@ -1,0 +1,62 @@
+menu "驱动配置"
+# 这里的 CONFIG_xxx 有两个作用:
+#   1) C 代码层面: 生成 autoconf.h, 驱动/应用用 #ifdef CONFIG_xxx 条件编译
+#   2) Make 层面: Makefile include .config, 通过 obj-$(CONFIG_xxx) 决定哪些驱动参与编译
+
+config DRIVER_SYSTICK
+	bool "SysTick 延时驱动 (设备树 systick 节点)"
+	default y
+	help
+		  基于 Cortex-M3 内核 SysTick 的阻塞延时 (systick_init / sys_delay_us /
+		  sys_delay_ms), CPU 时钟频率来自设备树 systick 节点的 clock-frequency。
+		  key / matrix_key 的消抖扫描依赖本驱动提供的延时。
+
+config DRIVER_GPIO_GD32
+	bool "GD32 GPIO 核心驱动 (设备树驱动)"
+	default y
+	help
+		  GD32F10x GPIO 的配置/读写/翻转驱动, 引脚信息全部来自设备树
+		  (build/generated/devicetree_generated.h)。
+		  是 led / key / matrix_key 驱动的基础, 关闭后它们也无法工作。
+
+config DRIVER_LED
+	bool "LED 驱动 (设备树 leds 节点)"
+	default y
+	depends on DRIVER_GPIO_GD32
+	help
+		  扫描设备树中 compatible = "gd,gpio-leds" 的节点, 生成 LED 实例表,
+		  提供 led_set / led_toggle / LED1(x) 等接口。
+
+config DRIVER_KEY
+	bool "独立按键驱动 (设备树 keys 节点)"
+	default y
+	depends on DRIVER_GPIO_GD32
+	depends on DRIVER_SYSTICK
+	help
+		  扫描设备树中 compatible = "gd,gpio-keys" 的节点, 提供按键消抖
+		  扫描 key_scan() 与 KEY1~KEY4 读电平宏。
+
+config KEY_DEBOUNCE_MS
+	int "按键消抖延时 (ms)"
+	default 20
+	depends on DRIVER_KEY
+	help
+		  key_scan() 检测到按键按下后的消抖延时。
+
+config DRIVER_MATRIX_KEY
+	bool "矩阵键盘驱动 (设备树 matrix-keys 节点)"
+	default y
+	depends on DRIVER_GPIO_GD32
+	depends on DRIVER_SYSTICK
+	help
+		  扫描设备树中 compatible = "gd,gpio-matrix-keys" 节点的
+		  row-gpios / col-gpios, 提供逐行扫描 matrix_key_scan()。
+
+config MATRIX_ROW_DELAY_MS
+	int "矩阵扫描行切换延时 (ms)"
+	default 10
+	depends on DRIVER_MATRIX_KEY
+	help
+		  矩阵扫描拉低每一行后, 等待电平稳定的时间。
+
+endmenu

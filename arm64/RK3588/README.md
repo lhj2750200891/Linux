@@ -37,7 +37,7 @@ roc-rk3588s-pc / robotic-evb-v11) 的设备树配置, 供自研板移植参考�
 | 其他模块 | [misc-modules.md](misc-modules.md) | 风扇(手控/温控/FG) / MC3230 / 蜂鸣器 / INA226 / SPI spidev / RTL8126 5G 网口 / SW3203 / WOL / M.2 SSD | 2026-10-29 |
 | 充放电 | [charging.md](charging.md) | CW2017 电量计 + SC8886 充电芯片 + PD 三芯片联动 (原理/三条链路/8 必填属性值域表/移植/寄存器级调试) | 2026-10-29 |
 | 电源 | [power.md](power.md) | 12V→PMIC 整板供电树原理 / RK806+RK860x 完整 dts / 上电时序与调压者 / always-on·挂起策略 / regulator_summary 验证 | 2026-11-04 |
-| 设备树→驱动 | [drivers/dt-to-driver.md](drivers/dt-to-driver.md) | 七阶段全链路 (dtc→unflatten→populate→match→probe→modalias) / 属性↔驱动API 对照表 / 8 类接口机制差异 (platform/I2C/SPI/MDIO/USB/serdev/MFD/of_graph) / probe 错误码速查 / 排查决策树 | 2026-11-04 |
+| 设备树→驱动 | [drivers/dt-to-driver.md](drivers/dt-to-driver.md) | 七个真实案例走读 (gpio-leds/cw2017/rk806 MFD/bluetooth-platdata/EC25/imx415 of_graph/es8388 声卡), 每案例=真实节点原文+驱动源码逐行对讲; 含 compatible 逐值比对·I2C 子设备创建·MFD 拆分·VID/PID 匹配等机制与错误码速查 | 2026-11-04 (重写: 案例驱动) |
 | PHY 与高速控制器 | [drivers/phy-controller.md](drivers/phy-controller.md) | 控制器/PHY 两层模型 / 三类接口定位法 (GPIO复用·USB2模拟·SerDes) / 全部 15 颗 PHY 家族表 (含默认status) / 控制器↔PHY 绑定总表 / 冲突互斥组 / RK3588 vs S 增量 / 四步反查方法论 / 六种链路 DT 实例 / 板端验证与症状表 | 2026-11-04 |
 
 ## 待实现模块

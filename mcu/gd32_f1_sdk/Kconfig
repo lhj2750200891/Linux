@@ -1,0 +1,21 @@
+# 顶层 Kconfig —— make 配置体系的入口
+# 用法: 改配置直接编辑 .config, 或 make defconfig 恢复当前板卡的默认配置
+
+mainmenu "GD32F10x 固件框架"
+
+menu "板卡 / 芯片"
+# 一个工程可对应多块板卡, 由 defconfig 决定用哪块板的硬件描述
+
+# 芯片标记(多块板卡共用同一颗芯片)
+config CHIP_GD32F103RE
+	bool
+	default y
+
+# 板卡设备树: 由各板卡的 defconfig 指定 (构建时的硬件描述来源)
+config BOARD_DTS
+	string "板卡设备树文件(相对工程根目录的路径)"
+	default ""
+
+endmenu
+
+source "drivers/Kconfig"

@@ -1,274 +1,489 @@
 # 设备树到驱动
 
-　　一份 dts 属性从文本到被驱动消费的完整旅程: 七个阶段的全链路, 按接口
-(platform / I2C / SPI / MDIO / USB / serdev / MFD / of_graph) 分类的机制差异,
-匹配失败与 probe 失败的系统化排查。所有例证均取自本 SDK 6.12.69 真实源码
-(标了文件与行号), 可直接对照翻源码。
+　　不讲抽象流程, 讲七个真实案例。每个案例都从**本 SDK 里真实存在的设备树
+节点原文**开始, 到**驱动源码逐行消费这些属性**结束, 四段走读: ①节点在哪
+②设备谁造的 ③驱动怎么认出它 ④probe 里属性变成了什么。所有文件行号均可直
+接翻源码对照 (6.12.69)。
 
-## 1. 全程七个阶段
+## 1. 先记住一条主链
 
-### 1.1 阶段总览
-
-```
-阶段0  .dts/.dtsi 源码   include 展开, label 引用, status 翻译
-   │ dtc 编译 (label → phandle 数字展开, 语法/引用错误在这里报)
-   ▼
-阶段1  dtb               本 SDK: dtb 随 boot 交付, U-Boot 负责读出
-   │ U-Boot: /chosen 注入 bootargs/cmdline, 可能做 mac 等运行时 fixup
-   ▼
-阶段2  内核早期          unflatten_device_tree: blob → device_node 树
-   │                       产物: /proc/device-tree + /sys/firmware/fdt (原始 blob)
-   ▼
-阶段3  设备创建          of_platform_default_populate_init (arch_initcall_sync)
-   │                       有 compatible 的节点 → platform_device; simple-bus 递归
-   ▼
-阶段4  驱动注册          各驱动 module_init/subsys_initcall → bus 上挂 driver
-   │ bus core 撮合: driver.of_match_table ↔ device.of_node.compatible
-   ▼
-阶段5  probe()           devm_* 取资源 (reg/irq/clk/regulator/gpio/pinctrl/属性)
-   │ 供应商没就绪 → -EPROBE_DEFER 挂起, 供应商 probe 完成后自动重试
-   ▼
-阶段6  子系统注册        netdev/drm/mmc/input/... → 用户态节点出现
-   ▼
-阶段7  uevent/modalias   of:NxxxTxxxCxxx / usb:vXXXXdXXXX → udev 自动 modprobe
-```
-
-　　两个时间线的关系是理解钥匙: 阶段 3 建设备 (arch_initcall_sync), 阶段 4 注册
-驱动 (各级 initcall), 谁后到谁触发撮合 —— 所以"设备先建、驱动后来"和"驱动先在、
-设备后建"都能自动配对, **唯一不能自动恢复的是资源依赖未就绪**, 那会走
--EPROBE_DEFER (见 1.2 阶段 5)。
-
-### 1.2 逐段要点
-
-| 阶段 | 发生了什么 | 你能验证什么 |
-|---|---|---|
-| 0 源码 | bindings 是合同: 驱动要什么属性写在 Documentation/devicetree/bindings 对应 yaml/txt | 写 dts 前先读 binding, 不靠猜 |
-| 1 dtb | label 展开成 phandle 数字; 引用不存在 label 编译即报 | 反编译: `dtc -I dtb -O dts xxx.dtb > x.dts` |
-| 2 U-Boot | fixup 后传 fdt 给内核 | 板端看 /sys/firmware/fdt 是否与你的源码一致 (阶段 3 验证) |
-| 3 内核早期 | blob → device_node; /proc/device-tree 可 cat | `ls /proc/device-tree/xxx`, `strings /sys/firmware/fdt \| grep compatible` |
-| 4 设备创建 | 只给**有 compatible** 的节点建 platform_device; 带 `simple-bus` 的总线节点向下递归; chosen/aliases/memory 这类无 compatible 节点跳过 | `ls /sys/bus/platform/devices/ \| grep fe2c` (按地址) |
-| 5 注册撮合 | compatible 逐个比对 of_match_table; 首个匹配生效 | `cat /sys/bus/platform/devices/*/uevent` 看 `OF_FULLNAME`/`MODALIAS` |
-| 6 probe | 见 1.3 属性消费表 | `dmesg` 错误码; debugfs devices_deferred |
-| 7 子系统/uevent | 注册进子系统后用户态可见; 模块按 modalias 自动加载 | `udevadm info /sys/...` 看 MODALIAS |
-
-### 1.3 probe 期: 属性名 ↔ 驱动 API 对照表
-
-　　驱动不是"读 dts 文本", 而是经内核 API 按**名字**取已解析好的资源。
-dts 属性名写错, 对应 API 取不到, 这张表是排查对照的锚:
-
-| dts 属性 | 驱动侧 API | 取不到时 |
-|---|---|---|
-| `reg` (地址/CS) | platform_get_resource / i2c 地址在 client->addr | -ENXIO |
-| `interrupts` | platform_get_irq / i2c client->irq | -ENXIO 或轮询退化 |
-| `clocks` + `clock-names` | devm_clk_get(dev, "name") | -ENOENT→常转 EPROBE_DEFER |
-| `xxx-supply` | devm_regulator_get(dev, "xxx") | -EPROBE_DEFER (等 PMIC) |
-| `pinctrl-0` + `pinctrl-names` | pinctrl 框架 default state 自动应用 | 引脚保持复用错误状态 |
-| `xxx-gpios` | devm_gpiod_get(dev, "xxx", flags) | -ENOENT/-EINVAL |
-| 自定义属性 (`rockchip,xxx` 等) | of_property_read_u32/string/... device_property_read_* | 驱动用默认值或 -EINVAL |
-| `compatible` 本身 | of_match_device / i2c_client->of_node | 已在匹配期用掉 |
-
-　　CW2017 例子 (真实源码 drivers/power/supply/cw2015_battery.c:591):
-`device_property_count_u8(dev, "cellwise,battery-profile")` —— 板级 dts 里的
-厂商前缀属性就这样进驱动。
-
-## 2. 按接口分类 (每类五要素: DT 写法/谁建设备/驱动匹配/probe 取资源/典型失败)
-
-### 2.1 platform: SoC 内部控制器与纯 DT 驱动
-
-　　绝大多数控制器 (uart/i2c/spi/gmac/pcie/dsi/vop/mmc...) 都是这一类。
-设备树里写在 SoC dtsi (rk3588s.dtsi) 的节点, 板级只做三件事: 翻 status、
-补 pinctrl、接 supply。
-
-- **DT 写法**: 控制器节点在 rk3588s.dtsi 已有 (地址/中断/compatible 全带),
-  板级覆盖 `&sdmmc { status = "okay"; vmmc-supply = <&vcc3v3_sd_s0>; ... }`;
-- **谁建设备**: 阶段 4 populate 统一建;
-- **驱动匹配**: `drivers/mmc/host/dw_mmc-rockchip.c` of_match 表含
-  `"rockchip,rk3588-dw-mshc"` (与 README 方法论第 3 条同款查法);
-- **probe 取资源**: reg/irq 来自 SoC dtsi 的 reg/interrupts, clk 按 clock-names,
-  vmmc/vqmmc 按 supply 名;
-- **典型失败**: 只翻了子节点 status 没翻**父控制器** status (最常见);
-  pinctrl 组名写错 → 引脚复用不对但 probe 照样成功 (2.1 特性: 失败是静默的)。
-
-　　gpio-keys / gpio-leds / pwm-backlight / regulator-fixed 也归此类:
-驱动不挂总线, probe 里直接 of_property 读属性。
-
-### 2.2 I2C 外设
-
-- **DT 写法**: 作为 i2c 控制器的子节点, `compatible` + `reg` (7bit 地址) +
-  私有属性; 例 (sound-card.md 的 ES8388): compatible = "everest,es8323";
-  充放电 (charging.md): compatible = "cellwise,cw2015", reg = <0x63>;
-- **谁建设备**: **不是 populate** —— i2c 控制器驱动 probe 成功后, i2c core
-  扫描其 of_node 子节点, 逐个造 i2c_client (so: 适配器驱动没跑起来, 子设备
-  全都不存在);
-- **驱动匹配**: 内核 i2c 驱动 of_match 表对 compatible, 例
-  `sound/soc/codecs/es8323.c:939` → `"everest,es8323"`,
-  `drivers/power/supply/cw2015_battery.c:767` → `"cellwise,cw2015"`;
-- **probe 取资源**: client->addr 即 reg; 属性走 device_property_*;
-- **典型失败**: compatible 与驱动表一字之差 (es8323 vs es8388: 驱动只用 es8323
-  兼容, compatible 必须写 es8323); i2c 地址错 → i2c core 在 client 创建时就
-  -ENXIO (设备探测不到 ACK); 适配器本身没起来 (查 dmesg 适配器 probe)。
-
-### 2.3 SPI 外设
-
-- **DT 写法**: spi 控制器子节点, `reg` = 片选号, `spi-max-frequency`;
-  例: CAN 外挂 MCP2518FD (can.md), PMIC RK806 (power.md, spi2 cs0, 1MHz);
-- **谁建设备**: spi 控制器 probe 后由 spi core 造 spi_device, 机制与 I2C 同构;
-- **驱动匹配**: `drivers/net/can/spi/mcp251xfd/` 对 `"microchip,mcp2518fd"`;
-  `drivers/mfd/rk806-core.c` 对 `"rockchip,rk806"` (SPI+MFD 组合, 见 2.7);
-- **probe 取资源**: reg=片选, 双向走 spi_transfer, DT 属性照旧;
-- **典型失败**: 片选引脚被别的模块占 (引脚冲突表思路); max frequency 超芯片
-  上限 (rk806 只能 1MHz, 写高直接通信异常); CS 极性/spi-cpha 等时序位错。
-
-### 2.4 MDIO/PHY (以太网 PHY)
-
-- **DT 写法**: gmac 节点内的 `mdio { ethernet-phy@N { reg = <N>; } }`,
-  外加 gmac 上的 `phy-mode` / delay 属性 (gmac.md 的 tx_delay);
-- **谁建设备**: gmac 驱动 probe 时 of_mdiobus_register 扫子节点造 phy_device;
-- **驱动匹配**: **不靠 compatible** —— PHY 驱动按硬件 ID 表硬匹配
-  (`drivers/net/phy/realtek.c` 用 PHY_ID_MATCH_EXACT 列 ID, 读寄存器 2/3 得到);
-  compatible 可写可不写, 仅用于额外信息;
-- **probe 取资源**: PHY 框架自管; dts 的 reg 决定 MDIO 地址;
-- **典型失败**: MDIO 地址错 (千兆网口"链路起不来"); PHY 供电/reg_on 没给
-  (mdio 扫描不到任何设备); delay 属性不对 (能 link 但丢包)。
-
-### 2.5 USB 设备
-
-　　认知反转: **USB 设备本身不在设备树里** —— 热插拔的设备 dts 管不着。
-DT 只负责三件事: 控制器 (dwc3/ehci) + PHY (u2phy/combphy) + 供电 (vbus 门控轨,
-见 power.md 2.5)。
-
-- **驱动匹配**: VID/PID 硬编码表, 例 4G 模组 `drivers/usb/serial/option.c`:
-  `USB_DEVICE_AND_INTERFACE_INFO(0x2c7c, 0x0125, ...)` (Quectel EC25/EC20 族);
-- **设备创建**: USB core 枚举时按描述符造 usb_device/interface;
-- **modalias**: `usb:v2C7Cd0125d...`, udev 据此 modprobe;
-- **probe 取资源**: 描述符 (interface class/endpoint), DT 无关;
-- **典型失败**: 驱动表没有该 VID/PID (换模组型号后不开机不了网) → 用
-  `lsusb` 拿 ID 对照; 但"枚举不到设备"则是 DT 侧问题 (vbus 没供上 / u2phy
-  没配 / dr_mode 错) —— 先分清"设备没枚举"还是"枚举了没驱动", 排查方向
-  完全不同。
-
-### 2.6 serdev: UART 上的蓝牙
-
-- **DT 写法**: uart 控制器子节点带 compatible + `current-speed`, 例
-  Realtek BT: `"realtek,rtl8822cs-bt"` (真实源码 drivers/bluetooth/hci_h5.c:1104
-  的 rtl_bluetooth_of_match);
-- **谁建设备**: uart probe 后 serdev core 造 serdev_device;
-- **驱动匹配**: hci_uart 各 serdev 驱动 of_match 表;
-- **典型失败**: 与用户态方案混淆 —— 本 SDK 的 WiFi/BT 组合卡走
-  external/rkwifibt 用户态 (hciattach/loader) 方案 (wifi-bt.md), DT 里**没有**
-  BT serdev 节点属正常; 只有内核态 serdev 方案才需要这节。判断依据:
-  `dmesg | grep hci` 看 BT 是谁拉起来的。
-
-### 2.7 MFD + cells: 一颗芯片拆成多个设备
-
-　　RK806 是标准教材: DT 里只有一个 PMIC 节点, 但内核里跑着五六个驱动。
-
-- **DT 写法**: 只有父节点 (power.md 2.2 完整版); regulators/pwrkey 等功能
-  **没有独立 DT 节点**, 作为父节点的子结构存在;
-- **谁建设备**: 父驱动 (mfd) probe 成功后 `devm_mfd_add_devices` 按
-  mfd_cell 表造子 platform_device (rk806-core.c:340 rk806_cells[], :943
-  devm_mfd_add_devices, PLATFORM_DEVID_AUTO);
-- **驱动匹配**: 两级 —— 父驱动匹配 `"rockchip,rk806"`; 子驱动按 cell 的
-  `.name` (如 "rk806-pinctrl"/"rk805-pwrkey" 族) 平台匹配, **不走 compatible**;
-- **probe 取资源**: 子驱动通过 parent->of_node 读属性 (父 DT 节点里的私有
-  属性子驱动照样能取), regmap 由 MFD 框架共享;
-- **典型失败**: 父 probe 失败则全军覆没 (先看父); 子设备缺一个先查 cells
-  注册条件 (rk806_cells 里部分 cell 按硬件特性开关)。
-
-### 2.8 of_graph: 端口图 (显示/摄像头的数据流)
-
-　　与前面所有类别本质不同: 匹配的不是"驱动↔设备", 而是**设备↔设备**。
-ports/endpoints/remote-endpoint 构成一张有向图, 表达像素/数据的流动路径:
-
-- **DT 写法**: 每个参与节点带 ports 子树, endpoint 用 remote-endpoint phandle
-  互指成边。例: VOP → HDMI 控制器 → PHY; 摄像头链 imx415 → csi2_dphy →
-  mipi_csi2 (mipi-csi.md 的 CAM0/CAM1 切换就是改图的边);
-- **谁消费**: 显示用 `drm_of_find_panel_or_bridge`/drm core 沿图找对端,
-  v4l2 用 async subdev 注册器;
-- **驱动匹配**: 照旧 compatible, 但 probe 成功 ≠ 能出画面 —— 图不完整时
-  probe 正常、数据流断;
-- **典型失败 (高发!)**: 边缺失或单向指 —— 整条 pipeline 因某一跳 remote
-  为空而静默不工作。AIO-3588L DP 无画面实录 (typec.md) 就是这个: connector
-  图缺 dp0 边 → dw-dp mux 永不回调, probe 一切正常。**显示/摄像头问题先
-  打图, 再查驱动**;
-- **验证**: `/proc/device-tree` 里 cat 各 endpoint 的 remote-endpoint phandle,
-  两端 phandle 必须互指。
-
-## 3. 失败排查
-
-### 3.1 先分清两种失败
-
-| 现象 | 判别 | 对应排查 |
-|---|---|---|
-| `/sys/bus/xxx/devices/` 里没这个设备 | 设备压根没创建 | DT 没进 dtb / status 没翻 / 父控制器没起 / (I2C·SPI·MDIO·serdev) 总线驱动没起 |
-| 设备在, 但没有 driver 文件 | 匹配失败 | compatible 与 of_match_table 不一致 / 驱动没编入 / modalias 不在驱动表 (USB 常见) |
-| 有 driver 文件但 probe 失败/反复 defer | probe 出错 | 错误码表 (3.3) + devices_deferred |
-
-### 3.2 排查决策树 (从"它没工作"开始)
+　　七个案例共享同一条主干, 只在"设备谁造"和"驱动怎么匹配"两处分岔:
 
 ```
-第一步: 板端跑的 dtb 是不是这份?
-  strings /sys/firmware/fdt | grep -A1 <节点关键字>
-  (编译产物没烧对是第一大坑, 尤其改了 dtsi 忘重编/忘烧)
+.dts/.dtsi 源码 ──dtc──▶ dtb ──U-Boot fixup──▶ 内核 unflatten
+                                              (blob → device_node 树)
+                                                    │
+              ┌─────────────────────────────────────┤
+              │ 设备创建 (两条路, §3~§8 分述)        │
+              ▼                                     ▼
+   populate: 有 compatible 的节点             总线驱动扫描子节点
+   → platform_device                          (i2c/spi/serdev/mdio)
+              │                                     │
+              └──────────── 驱动注册到总线 ─────────┘
+                              │ 撮合: compatible 字符串逐个比对
+                              ▼
+                         probe(dev)  ← 按"属性名"取资源
+                              ▼
+                     子系统注册 → 用户态可见
+```
 
-第二步: 设备存在吗? (按接口找: platform 按地址, i2c 用 i2cdetect,
-  usb 用 lsusb, mdio 看 eth0 的 phydev)
-  ├── 不存在 → 查 populate 链: 节点有 compatible 吗? status okay 吗?
-  │           父控制器 (i2c/spi/uart/gmac 本身) probe 成功了吗?
-  │           (I2C/SPI/MDIO/serdev 的子设备寿命完全挂在总线驱动上)
-  └── 存在 → ls 该设备目录, 有 driver 符号链接吗?
-        ├── 无 → compatible 与驱动 of_match_table 逐字符比对
+　　三句认知, 全文反复出现:
+
+- **设备创建分两派**: 有 compatible 的节点由内核统一 populate 建成
+  platform_device; 挂在总线控制器下的子设备 (I2C/SPI 等) 由**总线驱动
+  probe 成功后**扫描子节点再建——总线驱动没起, 子设备根本不存在。
+- **匹配就是字符串比对**: compatible 的值列表**逐个**与驱动
+  of_match_table 比对, 哪个值先命中算哪个 (§8 有活例: 板子写 es8388,
+  驱动表只有 es8323, 靠第二个值命中)。
+- **probe 按名字取资源**: 驱动不读 dts 文本, 而是调内核 API 按属性名
+  取——`devm_clk_get(dev, "xvclk")` 找的是 `clock-names = "xvclk"`,
+  名字对不上就 -ENOENT 或挂起等 -EPROBE_DEFER。
+
+## 2. 案例一: gpio-leds —— 最短的 platform 链路 (SG 板三颗 LED)
+
+### 2.1 节点在哪
+
+　　AIO-3588SG 板级 dtsi (:11~27, firefly_leds 父节点 + 子节点代表):
+
+```
+firefly_leds: leds {
+    compatible = "gpio-leds";
+    status = "okay";
+
+    power_led: power {
+        label = ":power";
+        linux,default-trigger = "ir-power-click";
+        default-state = "on";
+        gpios = <&pca9555 PCA_IO1_7 GPIO_ACTIVE_HIGH>;
+    };
+    user_led: user {
+        label = ":user";
+        linux,default-trigger = "ir-user-click";
+        default-state = "off";
+        gpios = <&pca9555 PCA_IO1_6 GPIO_ACTIVE_HIGH>;
+    };
+    ...
+};
+```
+
+　　注意 LED 的 GPIO 挂在 **I2C 扩展芯片 pca9555** 上而非 SoC 引脚
+(节点在 :435~441: `compatible = "nxp,pca9555"; reg = <0x21>;
+gpio-controller; #gpio-cells = <2>;`)。leds 驱动完全不需要知道这件事——
+gpiod 框架把 SoC GPIO 和扩展器 GPIO 统一成一个"控制器+编号"抽象, 这是
+设备树分层的第一课。
+
+### 2.2 设备谁造的 / 驱动怎么认出它
+
+　　`gpio-leds` 是有 compatible 的节点, 由内核 populate 统一建成
+platform_device (无总线, SoC 内部/纯软件节点都走这条)。驱动在
+`drivers/leds/leds-gpio.c`: of_match 表 :209 匹配 `"gpio-leds"`,
+probe 函数 gpio_led_probe :262。
+
+### 2.3 probe 里属性变成了什么
+
+　　probe 调 gpio_leds_create (:165 起) 遍历父节点每个子节点——**每个
+子节点就是一颗 LED**:
+
+```
+device_for_each_child_node(dev, child)              /* :165 遍历 power/user/... */
+    led.gpiod = devm_fwnode_gpiod_get(dev, child, NULL,
+                    GPIOD_ASIS, ...)                /* :174 吃掉 gpios 属性 */
+    ret = create_gpio_led(&led, led_dat, dev, child, ...)  /* :194 */
+```
+
+　　create_gpio_led (:80) 内部把 `default-state` 拉成初始电平、把
+`linux,default-trigger` 挂到 led_classdev、以子节点的 fwnode 注册
+(:123 init_data.fwnode)——于是用户态出现 `/sys/class/leds/:power`,
+echo 到 brightness 就翻转 pca9555 的 IO1_7。
+
+　　失败形态: 子节点少写 `gpios` → 该 LED 静默消失 (probe 成功, 只是
+少注册一颗); label 漏写 → sysfs 名字变成节点名。**这种失败不报错**,
+是"配置对了才有"而非"配错就报"的典型。
+
+## 3. 案例二: cw2017 电量计 —— I2C 子设备与 /bits/ 8 私有属性
+
+### 3.1 节点在哪
+
+　　AIO-3588SG (:446~462, 节选):
+
+```
+cw2017: cw2017@63 {
+    status = "okay";
+    compatible = "cellwise,cw2017";
+    reg = <0x63>;
+    cellwise,battery-profile = /bits/ 8
+        <
+        0x3C 0x00 0x00 0x00 0x00 0x00 0x00 0x00
+        ... (共 80 字节, Cellwise 厂商提供的电池曲线)
+        0x00 0x00 0x00 0x00 0x00 0x00 0x00 0xA2
+        >;
+};
+```
+
+　　`/bits/ 8` 是 dtc 语法: 把尖括号里的数按 8 位打包 (不加的话每个
+0x3C 会被当 32 位整数, 驱动读出来的字节流全错)。
+
+### 3.2 设备谁造的 —— 关键差异: 不是 populate
+
+　　cw2017 挂在 i2c 控制器下面。设备树里它**永远不会被 populate 建成
+platform_device**——它是等 i2c 适配器驱动 (rk3x-i2c) probe 成功后,
+由 i2c core 扫描适配器节点子节点建的 (`drivers/i2c/i2c-core-of.c`:
+of_i2c_register_devices :85 → of_i2c_register_device :66 →
+of_i2c_get_board_info 把 `reg` 读进 info->addr、节点挂上 info->of_node
+:50~51)。所以: 适配器驱动没起来/适配器 status=disabled, cw2017 这个
+i2c_client 就根本不存在, 任何报错都不会有。
+
+### 3.3 驱动怎么认出它
+
+　　驱动是 `drivers/power/supply/cw2017_battery.c`: of_match 表 :695
+`{ .compatible = "cellwise,cw2017" }`。
+
+　　**同目录还有个 cw2015_battery.c (:767 只认 "cellwise,cw2015")——
+那是另一颗芯片另一个驱动**。板级 compatible 写 cw2017 就绑 cw2017
+驱动, 写 cw2015 就绑 cw2015 驱动, 差一个字符绑的对象完全不同 (绑错
+的一方 probe 时寄存器读回全是错值, 报 -ETIMEDOUT/-ENODEV 之类)。找
+驱动时先确认芯片确切型号再搜 compatible, 别两颗混着抄。
+
+### 3.4 probe 里属性变成了什么
+
+```
+cw2017_parse_properties(cw_bat);                        /* :602 probe 内调用 */
+    length = device_property_count_u8(dev,
+                    "cellwise,battery-profile");        /* :499 数出 80 */
+    if (length < 0)
+        "No battery-profile found, using current flash contents"
+    else if (length != CW2017_SIZE_BATINFO)
+        dev_err(..., "battery-profile must be %d bytes\n");  /* :504 → -EINVAL */
+    device_property_read_u8_array(dev,
+                    "cellwise,battery-profile", ...);   /* :514 字节流进驱动 */
+    cw_bat->regmap = devm_regmap_init_i2c(client, ...); /* :608 reg=<0x63> 就是 client->addr */
+```
+
+　　一条厂商私有属性的完整旅程到此走完: dts 80 字节 → dtb → fdt →
+device_node → device_property API → 驱动写进芯片 flash。之后
+`/sys/class/power_supply/cw2017-battery/` 出现 (power_supply_desc
+.name = "cw2017-battery", :486)。
+
+## 4. 案例三: RK806 —— SPI 设备 + MFD 一拆三
+
+### 4.1 节点在哪
+
+　　`rk3588-rk806-single.dtsi` (:11~48, 节选; 完整 21 轨见 power.md):
+
+```
+&spi2 {
+    status = "okay";
+    assigned-clocks = <&cru CLK_SPI2>;
+    assigned-clock-rates = <200000000>;
+    pinctrl-0 = <&spi2m2_cs0 &spi2m2_pins>;
+    num-cs = <1>;
+
+    rk806single: rk806single@0 {
+        compatible = "rockchip,rk806";
+        spi-max-frequency = <1000000>;      /* RK806 只能 1MHz, 写高直接通信异常 */
+        reg = <0x0>;                        /* SPI 片选 0 */
+        interrupt-parent = <&gpio0>;
+        interrupts = <7 IRQ_TYPE_LEVEL_LOW>;  /* GPIO0_A7, 低电平中断 */
+        low_voltage_threshold = <3000>;     /* 私有阈值属性, 驱动消费 */
+        shutdown_temperture_threshold = <160>;
+        pmic-reset-func = <1>;
+        vcc1-supply = <&vcc5v0_sys>;        /* 每路 DCDC 的输入轨声明 */
+        ...
+        regulators { vcc1... };             /* 21 路输出全在这一个子树里 */
+    };
+};
+```
+
+### 4.2 驱动怎么认出它
+
+　　匹配入口是 `drivers/mfd/rk8xx-spi.c` (:101 of_match
+`"rockchip,rk806"`)——RK806 有 SPI 版和 I2C 版 (rk8xx-i2c.c :228),
+同一颗芯片按挂在哪条总线上被不同入口接住, 公共实现在 rk806-core.c。
+SPI 子设备的创建与 I2C 同构: spi2 控制器 probe 成功后, spi core 扫
+子节点, `reg` 解释为片选号。
+
+### 4.3 MFD: 一个节点拆出三个设备
+
+　　rk806-core.c probe 成功后按 cells 表 (:340~349) 拆子设备:
+
+```
+static const struct mfd_cell rk806_cells[] = {
+    { .name = "rk806-pinctrl", },
+    { .name = "rk805-pwrkey", .num_resources = ..., .resources = ... },
+    { .name = "rk806-regulator", },
+};
+...
+devm_mfd_add_devices(rk806->dev, ..., rk806_cells,    /* :943 */
+                     ARRAY_SIZE(rk806_cells), ...);
+```
+
+　　这一步**凭空造出三个 platform_device** (名字来自 .name, 不走
+compatible), 各自被对应驱动接住: pinctrl 驱动、按键驱动、regulator
+驱动。regulator 驱动再把 `regulators {}` 子树的 21 路逐个注册成
+regulator——这就是"regulator 子节点为什么没有 compatible 也能工作"的
+答案: 它们的设备不是 populate 建的, 是 MFD 父驱动造的。父节点上的
+私有阈值属性 (low_voltage_threshold 等) 由 rk806-core probe 读走
+(:670~749), 属于父驱动自己消费。
+
+　　失败形态: 父 probe 失败 (SPI 不通/中断引脚不对) → 三个子设备全部
+不出现, 21 路电源全消失, 系统直接跑不到 rootfs——所以排 PMIC 问题
+永远先看父设备。
+
+## 5. 案例四: bluetooth-platdata —— 自定义属性平台驱动
+
+### 5.1 节点在哪
+
+　　AIO-3588SG (:94~105, 节选):
+
+```
+wireless_bluetooth: wireless-bluetooth {
+    compatible = "bluetooth-platdata";
+    clocks = <&hym8563>;
+    clock-names = "ext_clock";
+    uart_rts-gpios = <&gpio3 RK_PD2 GPIO_ACTIVE_LOW>;
+    pinctrl-names = "default", "rts_gpio";
+    pinctrl-0 = <&uart9m2_rtsn>, <&bt_reset_gpio>, <&bt_wake_gpio>, <&bt_irq_gpio>;
+    pinctrl-1 = <&uart9_gpio>;
+    BT,reset-gpios      = <&gpio0 RK_PD0 GPIO_ACTIVE_HIGH>;  /* BT_REG_ON */
+    BT,wake-gpios       = <&gpio0 RK_PC6 GPIO_ACTIVE_HIGH>;
+    BT,wake_host-gpios  = <&gpio0 RK_PC5 GPIO_ACTIVE_HIGH>;
+    status = "okay";
+};
+```
+
+### 5.2 驱动在哪 —— 一个找驱动的坑
+
+　　这个驱动的位置违反直觉: 在 `net/rfkill/rfkill-bt.c` (of_match
+:863 匹配 "bluetooth-platdata", probe rfkill_rk_probe :708)——**在
+net/ 下, 不在 drivers/ 下**。全局搜驱动时别只 grep drivers/, 按模块
+归属猜目录会漏 (wifi/bt 厂商驱动经常散落在 net/rfkill、
+net/wireless、drivers/net/wireless 三处, rkwifibt 方案还在
+external/rkwifibt)。
+
+### 5.3 probe 里属性变成了什么
+
+　　这是"厂商自定义属性怎么进驱动"的完整样本: probe 里逐个
+`of_get_named_gpio_flags(node, "BT,reset-gpios", ...)` 取 GPIO——
+**逗号前缀是属性名的一部分**, 查代码时照抄整串。pinctrl-names 定义
+了 default / rts_gpio 两个状态: BT 正常收发时 RTS 脚复用给 uart9
+(default), 需要把 RTS 强拉当普通 GPIO 用时驱动切到 rts_gpio 态
+(pinctrl_select_state)——一个脚在两个状态间切换, 这正是 ITX-3588J
+BT 修复案例里 RTS 卡死导致扫描不到设备的根因背景 (见 board 笔记)。
+
+## 6. 案例五: EC25 4G 模组 —— 设备根本不在设备树里
+
+### 6.1 反转: DT 里找不到这个设备
+
+　　4G 模组插上 USB 后才存在, 设备树不可能预先描述它。DT 只负责三
+件事: USB 控制器 (usbhost3_0)、PHY (combphy2_psu)、VBUS 供电门控
+(见 phy-controller.md §8 实例 2 与 power.md 门控轨)。
+
+### 6.2 驱动怎么认出它 —— VID/PID 硬表
+
+　　`drivers/usb/serial/option.c`: 厂商 ID 宏 :252
+(`QUECTEL_VENDOR_ID 0x2c7c`), 产品 ID :254~257 (RG650V=0x0122,
+EC25=0x0125), ID 表 :1187 `USB_DEVICE_AND_INTERFACE_INFO(0x2c7c,
+0x0125, ...)`。USB core 枚举时读设备描述符拿到 VID/PID, 逐表比对
+命中后调 option 的 probe——全程与设备树无关。
+
+　　匹配成功的设备 modalias 形如 `usb:v2C7Cd0125d...`, udev 据此自动
+modprobe。换模组型号后"插上没反应"先 `lsusb` 看 VID/PID 在不在
+option.c 表里; 而"枚举列表里根本没设备"则是 DT 侧问题 (vbus 没供/
+u2phy 没开/dr_mode 错)——两种症状排查方向完全相反, 第一步先分清。
+
+## 7. 案例六: imx415 摄像头 —— of_graph 端点图
+
+### 7.1 节点在哪
+
+　　AIO-3588SG (:1350~1393, 两端互指是关键):
+
+```
+imx415: imx415@37 {
+    compatible = "sony,imx415";
+    reg = <0x37>;
+    clocks = <&cru CLK_MIPI_CAMARAOUT_M1>;
+    clock-names = "xvclk";
+    power-domains = <&power RK3588_PD_VI>;
+    reset-gpios = <&gpio1 RK_PD5 GPIO_ACTIVE_LOW>;
+    rockchip,camera-module-index = <0>;          /* rockmodule 私有属性族 */
+    rockchip,camera-module-name = "CMK-OT2022-PX1";
+    rockchip,camera-module-lens-name = "IR0147-50IRC-8M-F20";
+    port {
+        imx415_out: endpoint {
+            remote-endpoint = <&mipidphy0_in_ucam1>;   /* 出边: 指向接收端 */
+            data-lanes = <1 2 3 4>;
+        };
+    };
+};
+
+&csi2_dphy0 {
+    status = "okay";
+    ports {
+        port@0 {
+            mipidphy0_in_ucam1: endpoint@1 {
+                reg = <1>;
+                remote-endpoint = <&imx415_out>;     /* 回边: 互指成对 */
+                data-lanes = <1 2 3 4>;
+            };
+        };
+        port@1 { ... };   /* 下一跳: csi2_dphy0 → mipi_csi2 → rkisp 一路指下去 */
+    };
+};
+```
+
+### 7.2 驱动怎么认出它 / probe 取什么
+
+　　驱动 `drivers/media/i2c/imx415.c`: of_match :3367
+`"sony,imx415"`; 设备由 i2c core 扫子节点创建 (同案例二); probe
+(:3164) 里 `devm_clk_get(dev, "xvclk")` (:3238) 按 **clock-names 的
+名字**取时钟, rockchip,camera-module-* 私有属性用 of_property_read
+(:3184 起) 读出塞进 submodule 信息。链路对接发生在 probe 尾部
+v4l2_async_register_subdev_sensor (:3319)——它以 fwnode 图为媒, 把
+自己注册成异步 subdev, 等下游 (rkisp) 的 async notifier 沿
+remote-endpoint 找上来完成配对。
+
+### 7.3 为什么"probe 全绿还是没图像"
+
+　　of_graph 表达的是**设备与设备之间的数据流**, 与驱动匹配是两回事。
+匹配只看 compatible 字符串; 数据流走不走, 取决于这条边链每一跳的
+remote-endpoint 是否成对互指。链上任何一跳的边缺失/单向指, pipeline
+就静默断流——所有节点 probe 正常, dmesg 干净, 就是没有帧。真实案例:
+AIO-3588L DP 无画面 (typec.md 实录), connector 图缺 dp0 一条边,
+dw-dp 的 mux 永远不被回调。**显示/摄像头问题第一动作: 打印两端
+endpoint, 核对 phandle 互指, 再谈驱动** (`cat /proc/device-tree/...
+/endpoint/remote-endpoint` 比对)。
+
+## 8. 案例七: es8388 声卡 —— 纯属性消费者 + phandle 串卡
+
+### 8.1 节点在哪
+
+　　声卡是"设备树配置密度最高、驱动代码最薄"的类型。SG 板两个节点:
+
+```
+es8388: es8388@11 {                          /* :526 编解码器 (I2C 设备) */
+    compatible = "everest,es8388", "everest,es8323";
+    reg = <0x11>;
+    clocks = <&mclkout_i2s0>;
+    clock-names = "mclk";
+    assigned-clock-rates = <12288000>;       /* MCLK 12.288MHz */
+    pinctrl-0 = <&i2s0_mclk>;                /* MCLK 从 I2S0_MCLK 脚输出 */
+};
+
+es8388_sound: es8388-sound {                 /* :141 声卡 (纯属性消费者) */
+    compatible = "rockchip,multicodecs-card";
+    rockchip,card-name = "rockchip-es8388";
+    spk-con-gpio = <&gpio1 RK_PC0 GPIO_ACTIVE_HIGH>;
+    rockchip,format = "i2s";
+    rockchip,mclk-fs = <256>;
+    rockchip,cpu = <&i2s0_8ch>;              /* DAI 的 CPU 侧: phandle */
+    rockchip,codec = <&es8388>;              /* DAI 的 codec 侧: phandle */
+    rockchip,audio-routing = "Speaker", "LOUT2", ...;  /* 路由表字符串对 */
+    ...
+};
+```
+
+　　先看 codec 节点的 compatible: `everest,es8388", "everest,es8323"`
+——**compatible 是列表, 内核逐个比对**。es8323.c 的 of_match 表里只
+有 `"everest,es8323"` (:939), 第一个值匹配不上, 第二个值命中——板子
+和芯片手册都叫 ES8388, 驱动按 ES8323 兼容, 两个值都写才两边都满足。
+这就是"匹配是字符串比对"最直观的活例。
+
+### 8.2 声卡节点 probe 里属性变成了什么
+
+　　驱动 `sound/soc/rockchip/rockchip_multicodecs.c`, probe
+rk_multicodecs_probe :872:
+
+| dts 属性 | 驱动消费点 |
+|---|---|
+| rockchip,card-name | snd_soc_of_parse_card_name (:902) → /proc/asound 卡名 |
+| rockchip,cpu | of_parse_phandle (:968) → dai_link 的 CPU of_node |
+| rockchip,codec | of_count_phandle_with_args + of_parse_phandle (:922/928) |
+| rockchip,codec-hp-det | of_property_read_bool (:1015) |
+| rockchip,audio-routing | snd_soc_of_parse_audio_routing (:1080) |
+| spk-con-gpio | probe 里 of_get_named_gpio_flags 取出, 运行时拉高/拉低开关功放 |
+
+　　注意这个节点**没有 reg、没有中断、没有自己的时钟**——它是一份
+"配置声明", probe 的工作就是把属性翻译成 ALSA 的 card/dai_link/
+routing 结构体。phandle 消费 (`rockchip,cpu = <&i2s0_8ch>`) 拿到的
+是**另一个节点的引用**: 声卡驱动由此把 i2s0 控制器驱动和 es8323 编
+解码器驱动"焊接"成一条 I2S 链路, 三方 (cpu/codec/card) probe 全部
+就位后才注册出声卡。
+
+### 8.3 probe 全绿 ≠ 有声音
+
+　　真实案例 (sound-card.md 实录): 声卡注册成功、aplay 不报错, 但喇
+叭无声——根因有两层: ①板级 spk-con-gpio 抄错引脚 (GPIO3_B7 抄自旧
+板, 实际接 GPIO1_C0), 功放使能脚永远没拉高; ②wireplumber (用户态
+音频服务) 冷启动把 Speaker Switch 置 0。第一层是"probe 时取了属性但
+值错", 第二层是"内核一切正常, 运行态被用户态改"——排查声音问题要
+按 内核 probe → ALSA 路由 → 用户态 mixer 三层各查一次。
+
+## 9. 失败排查
+
+### 9.1 三种失败, 对号入座
+
+| 症状 | 判别 | 对应案例 |
+|---|---|---|
+| 设备目录不存在 (`/sys/bus/*/devices/` 找不到) | 设备没创建 | populate 漏了 (没 compatible/status 没翻) 或**总线驱动没起** (I2C/SPI 子设备, §3/§4) |
+| 设备在, 但目录里没有 driver 符号链接 | 匹配失败 (静默!) | compatible 逐字符比对 of_match_table; §3 的 cw2015/cw2017 与 §8 的 es8388/es8323 都是活例 |
+| 有 driver, probe 失败或反复 defer | probe 出错 | dmesg 错误码 (9.3) + devices_deferred |
+
+### 9.2 排查决策树
+
+```
+第一步: 板端 dtb 是不是这份? (烧错/忘重编是第一大坑)
+  strings /sys/firmware/fdt | grep <节点关键字>
+  dtc -I dtb -O dts /sys/firmware/fdt > /tmp/board-fdt.dts   # 与源码 diff
+
+第二步: 设备存在吗? (platform 按地址 ls /sys/bus/platform/devices;
+  i2c 用 i2cdetect; usb 用 lsusb)
+  ├── 不存在 → 节点有 compatible 吗? status okay 吗?
+  │           父总线控制器 (i2c/spi/uart) probe 成功了吗?
+  └── 存在 → ls 设备目录, 有 driver 链接吗?
+        ├── 无 → compatible 与 of_match_table 逐字符比对
         │       驱动编进内核了吗? (modules.builtin / lsmod)
-        │       USB: MODALIAS (udevadm info) 在驱动 ID 表里吗?
-        └── 有 → probe 失败: dmesg 错误码 + devices_deferred (3.3)
+        └── 有 → probe 失败: dmesg 错误码 + devices_deferred
 ```
 
-### 3.3 probe 错误码速查
+### 9.3 probe 错误码速查
 
 | dmesg 返回 | 含义 | 高发原因 |
 |---|---|---|
-| -517 | -EPROBE_DEFER | 等 supply/clk/pinctrl/iommu 供应商; 看下方 deferred 表, 供应商永远不来就永远 defer |
-| -2 | -ENOENT | clk/gpio 名字对不上 (clock-names/xxx-gpios 拼错或缺) |
-| -6 | -ENXIO | reg/irq 资源不存在 (地址错, interrupts-parent 没接对) |
-| -22 | -EINVAL | 必填 DT 属性缺失或值域错 (binding 合同没满足) |
-| -19 | -ENODEV | 驱动内部检查不过 (硬件 ID 不符/feature 判定不支持) |
-| -16 | -EBUSY | 地址/中断被占 (两个节点写同一 reg) |
-| -11 | -EAGAIN | 总线通信暂失败 (I2C NACK 抖动, 供电时序) |
-| -110 | -ETIMEDOUT | 芯片没应答 (没上电/没 clock/地址错) |
+| -517 | -EPROBE_DEFER | 等 supply/clk/pinctrl/iommu; 供应商永远不来就永远 defer |
+| -2 | -ENOENT | clk/gpio 名字对不上 (clock-names/xxx-gpios 拼错, §7 的 xvclk 例) |
+| -6 | -ENXIO | reg/irq 不存在 (地址错, interrupts-parent 没接对) |
+| -22 | -EINVAL | 必填属性缺失/值域错 (§3 的 profile 长度 != 80) |
+| -19 | -ENODEV | 驱动内部检查不过 (硬件 ID 不符/feature 不支持) |
+| -16 | -EBUSY | 地址/中断被占 (两个节点同 reg) |
+| -110 | -ETIMEDOUT | 芯片没应答 (没上电/没 clock/地址错/I2C 没接上拉) |
 
 ```
-cat /sys/kernel/debug/devices_deferred    # 全部挂起的设备及等谁
+cat /sys/kernel/debug/devices_deferred     # 全部挂起设备与等谁
 ```
 
-### 3.4 工具箱
+### 9.4 工具箱
 
 ```
-# 反编译板端真实 dtb (与源码 diff, 烧错/没生效一翻两瞪眼)
-dtc -I dtb -O dts /sys/firmware/fdt > /tmp/board-fdt.dts
-
-# 设备↔驱动撮合状态 (platform 示例, 其他 bus 同构)
-ls -l /sys/bus/platform/devices/fe2c0000.*        # driver 符号链接在不在
-cat /sys/bus/platform/devices/*/uevent | grep -E "OF_FULLNAME|MODALIAS"
-
 # 资源三表 (probe 失败三查)
-cat /sys/kernel/debug/devices_deferred            # 等谁
-cat /sys/kernel/debug/pinctrl/pinctrl-rockchip-pinctrl/pinmux-pins   # 引脚实际复用
+cat /sys/kernel/debug/pinctrl/pinctrl-rockchip-pinctrl/pinmux-pins  # 引脚实际复用
 cat /sys/kernel/debug/clk/clk_summary             # clock 树与使能计数
 cat /sys/kernel/debug/regulator/regulator_summary # 电源树与消费者
 
-# 手动撮合实验 (临时 override, 重启失效)
+# 设备↔驱动撮合状态
+ls -l /sys/bus/platform/devices/fe2c0000.*        # driver 符号链接在不在
+cat /sys/bus/platform/devices/*/uevent | grep -E "OF_FULLNAME|MODALIAS"
+
+# 手动撮合实验 (隔离时序问题: unbind 再 bind, 成功则是时序不是配置)
 echo <driver> > /sys/bus/platform/devices/xxx/driver_override
-echo xxx > /sys/bus/platform/drivers/<driver>/bind     # 反向 unbind 释放
+echo xxx > /sys/bus/platform/drivers/<driver>/bind
 ```
 
-　　driver_override/bind/unbind 是"隔离变量"神器: 怀疑顺序/依赖问题时,
-unbind 后重新 bind 一次, 若这次成功 → 是时序问题不是配置问题。
+### 9.5 实战案例索引 (各文档已修过的真坑)
 
-### 3.5 实战案例索引 (本目录已修过的真坑)
-
-| 案例 | 失败类型 | 教训 |
+| 案例 | 失败类型 | 出处 |
 |---|---|---|
-| AIO-3588L DP 无画面 (typec.md) | of_graph 边缺失, probe 全绿 | 显示问题先查端口图互指, 再查驱动 |
-| ES8388 喇叭 (sound-card.md) | probe 正常, 运行态被用户态改 | 内核态正常 ≠ 功能正常, 分层排查 |
-| ITX-3588J BT (board/ITX-3588J) | 用户态 rfkill/加载链 | 先确定 BT 走 serdev 还是 rkwifibt 用户态 (2.6) |
-| RGA no-core-match (根目录) | 6.12 API 变化致驱动匹配失败 | SDK 升级时 compatible/驱动结构对不上的典型 |
+| AIO-3588L DP 无画面 | of_graph 边缺失, probe 全绿 | typec.md (§7.3 机制) |
+| ES8388 喇叭无声 | 板级属性值错 + 用户态 mixer | sound-card.md (§8.3 机制) |
+| ITX-3588J BT 不起 | RTS/pinctrl 状态 + 用户态 rfkill 链 | board 笔记 (§5.3 机制) |
+| cw2017 绑错 cw2015 驱动风险 | compatible 一字之差 | §3.3 机制 |
+| RK806 上电 21 轨全失 | 父 MFD probe 失败连坐子设备 | power.md (§4.3 机制) |

@@ -1,0 +1,84 @@
+/*
+ * gd32f103re.dts —— 板级设备树(硬件连接描述)
+ *
+ * 编译期被读取: cpp -> dtc -> scripts/gen_devicetree.py -> devicetree_generated.h
+ * 引脚对应关系与旧版硬编码驱动的定义完全一致。
+ *
+ * 硬件描述规则(全部在设备树中, 驱动只按索引访问, 不关心具体名字):
+ *   count                    : 外设个数(必须与子节点个数一致, 生成器会校验)
+ *   row-count / col-count    : 矩阵键盘行列个数
+ *   led1/led2/led3 等子节点  : 每个外设的具体引脚
+ *   子节点名(如 led1)会生成宏 DT_LED1_IDX(实例下标), 应用层需要按名字访问时可用
+ */
+
+/dts-v1/;
+
+#include "gd32f103re.dtsi"
+
+/ {
+	model = "GD32F103RE generic board";
+	compatible = "gd,gd32f103re-generic";
+
+	/* ===== LED: 推挽输出, init-level = 上电初始电平 ===== */
+	leds {
+		compatible = "gd,gpio-leds";
+		count = <3>;                         /* LED 个数(设备树描述) */
+
+		led1 {
+			gpios = <&gpioc 13 GD32_MODE_OUT_PP>;
+			init-level = <1>;
+		};
+
+		led2 {
+			gpios = <&gpioc 9 GD32_MODE_OUT_PP>;
+			init-level = <1>;
+		};
+
+		led3 {
+			gpios = <&gpioc 8 GD32_MODE_OUT_PP>;
+			init-level = <1>;
+		};
+	};
+
+	/* ===== 独立按键: active-level = 按下时的电平 ===== */
+	keys {
+		compatible = "gd,gpio-keys";
+		count = <4>;                         /* 按键个数(设备树描述) */
+
+		key1 {
+			gpios = <&gpioa 7 GD32_MODE_IPU>;
+			active-level = <0>;
+		};
+
+		key2 {
+			gpios = <&gpioc 4 GD32_MODE_IPU>;
+			active-level = <0>;
+		};
+
+		key3 {
+			gpios = <&gpioc 5 GD32_MODE_IPU>;
+			active-level = <0>;
+		};
+
+		key4 {
+			gpios = <&gpioa 0 GD32_MODE_IPD>;
+			active-level = <1>;
+		};
+	};
+
+	/* ===== 矩阵键盘: 4 行(输出) x 3 列(输入) ===== */
+	matrix-keys {
+		compatible = "gd,gpio-matrix-keys";
+		row-count = <4>;                     /* 行数(设备树描述) */
+		col-count = <3>;                     /* 列数(设备树描述) */
+
+		row-gpios = <&gpioc 0 GD32_MODE_OUT_PP>,
+			    <&gpioc 1 GD32_MODE_OUT_PP>,
+			    <&gpioc 2 GD32_MODE_OUT_PP>,
+			    <&gpioc 3 GD32_MODE_OUT_PP>;
+
+		col-gpios = <&gpioa 4 GD32_MODE_IPU>,
+			    <&gpioa 5 GD32_MODE_IPU>,
+			    <&gpioa 6 GD32_MODE_IPU>;
+	};
+};

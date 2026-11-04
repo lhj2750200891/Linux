@@ -1,0 +1,68 @@
+/*
+ * gd32f103re.dtsi —— SoC 级设备树(芯片外设), 由板级 .dts include
+ *
+ * port-idx : 端口序号, 驱动内用它索引 GPIOA~GPIOE 基址/时钟表
+ *            (A=0, B=1, C=2, D=3, E=4)
+ * #gpio-cells = 2 : 引用格式为 <&gpiox 引脚号 模式>
+ */
+
+#include <dt-bindings/gpio/gd32f10x-gpio.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	soc {
+		compatible = "gd,gd32f103";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* Cortex-M3 内核 SysTick: clock-frequency 描述 CPU 时钟(延时基准),
+		 * 与 vendor 的 __SYSTEM_CLOCK_108M_PLL 一致; 板卡换主频时在板级 dts 覆写 */
+		systick: systick@e000e010 {
+			compatible = "gd,cortex-m-systick";
+			reg = <0xe000e010 0x10>;
+			clock-frequency = <108000000>;
+		};
+
+		gpioa: gpio@40010800 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40010800 0x400>;
+			port-idx = <0>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpiob: gpio@40010c00 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40010C00 0x400>;
+			port-idx = <1>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpioc: gpio@40011000 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40011000 0x400>;
+			port-idx = <2>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpiod: gpio@40011400 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40011400 0x400>;
+			port-idx = <3>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpioe: gpio@40011800 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40011800 0x400>;
+			port-idx = <4>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+	};
+};
