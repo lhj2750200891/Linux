@@ -645,3 +645,57 @@ dmesg | grep 1d5c                           # billboard 不再枚举 (DP 成功�
 # 最终状态 (2026-11-03 实测): 显示 + WingCoolTouch 触摸全部正常
 modetest -M rockchip -c                     # DP-1 connected
 ```
+
+### 6.6 DP 音频: 声卡已自带, 无声只差默认路由 (2026-11-04)
+
+　　画面修好后的第二个问题: DP 屏不出声。结论先行 —— **内核音频链从未坏
+过**: 声卡 `rockchip-dp0` 一直注册着 (来自 firefly-common.dtsi 的 FF_DP0
+段, 模板同 rk3588s-evb.dtsi 的 dp0-sound, 板级**无需重复添加**)。无声纯粹
+是 pipewire/wireplumber 的默认输出还指着 ES8388, 把默认 sink 切过去即可。
+
+音频链与 ALSA 层验证:
+
+```
+# 链路: spdif_tx2 (cpu) -> "rockchip,hdmi" machine 驱动
+#        -> hdmi-audio-codec (dw-dp probe 注册的平台设备, .spdif=1) => 声卡 rockchip-dp0
+aplay -l                                    # rockchip-dp0 在列 (本次实测 card 4)
+speaker-test -D plughw:4,0 -c 2 -t sine     # 绕开 pipewire 直测 => 屏喇叭出声 (实测)
+```
+
+　　ALSA 直测出声而播放视频无声 => 问题锁定在用户空间路由, 不在内核:
+
+```
+# sink 编号动态, 每次先 status 看编号再 set-default
+runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl status
+#   Sinks:  52  ALSA 插卡 es8388 (默认 *)
+#           58  Display Port                       <- 想要的
+runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl set-default 58
+```
+
+　　三个坑:
+　　1. **root 直接 `wpctl status` 报 "Could not connect to PipeWire"** —
+pipewire session 属 firefly(uid 1000), root 没有自己的 session, 必须借
+`XDG_RUNTIME_DIR=/run/user/1000`(runuser / sudo -u 均可)。
+　　2. 设备上 **没有 pactl**, 只有 wpctl(/usr/bin)。
+　　3. **拔屏即回落**: DP sink 随屏注销, wireplumber 默认自动回落 ES8388;
+重插屏要重新 set-default, dp-sound 报 "not found" 多半是屏没插着。
+
+　　一键脚本已装板端 `/usr/local/bin/dp-sound`(root 也能跑):
+
+```sh
+#!/bin/sh
+export XDG_RUNTIME_DIR=/run/user/1000
+ID=$(wpctl status | grep "Display Port" | head -1 | grep -oE "[0-9]+\." | tr -d ".")
+if [ -n "$ID" ]; then
+    wpctl set-default "$ID" && echo "DP audio is now the default output (sink $ID)"
+else
+    echo "Display Port sink not found (screen unplugged?)"
+    exit 1
+fi
+```
+
+　　GUI 同样能切: 设置 → 声音 → 输出 → 选 "Display Port"。播放验证:
+
+```
+sudo -u firefly XDG_RUNTIME_DIR=/run/user/1000 gst-play-1.0 4K_H264_bird.mp4
+```

@@ -13,15 +13,15 @@ rk3588-firefly-common.dtsi, 本文只记载板差异部分。
 
 ```
 PCA9555 (IO 扩展, 16 路) ===> I2C6_M0 (地址 0x21, 总线 400kHz)
-  PCA_IO0_0 ===> 4G_PWR_EN
-  PCA_IO0_3 ===> user LED
-  PCA_IO0_4 ===> USB2.0 HUB reset
-  PCA_IO0_5 ===> USB2.0 HOST 供电
-  PCA_IO0_6 ===> USB3.0 HUB reset
-  PCA_IO0_7 ===> USB3.0 供电
-  PCA_IO1_2 ===> SATA0 供电
-  PCA_IO1_4 ===> TypeC VBUS 5V 使能
-  PCA_IO1_5 ===> SD 卡供电
+PCA_IO0_0 ===> 4G_PWR_EN
+PCA_IO0_3 ===> user LED
+PCA_IO0_4 ===> USB2.0 HUB reset
+PCA_IO0_5 ===> USB2.0 HOST 供电
+PCA_IO0_6 ===> USB3.0 HUB reset
+PCA_IO0_7 ===> USB3.0 供电
+PCA_IO1_2 ===> SATA0 供电
+PCA_IO1_4 ===> TypeC VBUS 5V 使能
+PCA_IO1_5 ===> SD 卡供电
 ```
 
 ### 设备树配置

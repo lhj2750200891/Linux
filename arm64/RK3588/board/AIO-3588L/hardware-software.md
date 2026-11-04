@@ -166,6 +166,8 @@ dmesg | grep -i hdmirx
 cat /sys/class/video4linux/video*/name | grep -i hdmirx
 v4l2-ctl -d /dev/videoXX --set-fmt-video=width=1920,height=1080,pixelformat=NV16 \
 	--stream-mmap --stream-count=60 --stream-to=/tmp/hdmiin.yuv
+
+# 2026-11-04 状态: FF_HDMI_RX 按上述配置即为正常, 无需额外修复
 ```
 
 ## WATCHDOG (PC9202)
@@ -403,10 +405,20 @@ route_dp0 / dp0 音频 (spdif_tx2) 位于 common FF_DP0 段
 cat /sys/class/drm/*/status
 modetest -M rockchip -c        # DP-1 出现即可
 
-# 切换音频默认声卡
+# DP 音频: 声卡 rockchip-dp0 来自 common FF_DP0 段, 板级无需加; 无声只差默认路由
+aplay -l                                        # rockchip-dp0 在列 (实测 card 4)
+speaker-test -D plughw:4,0 -c 2 -t sine         # ALSA 直测绕开 pipewire, 屏喇叭出声
+
+# 切换音频默认声卡 (pipewire 默认是 ES8388; sink 编号动态, 每次先 status)
 runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl status    # 找sinks里面的标号
 runuser -u firefly -- env XDG_RUNTIME_DIR=/run/user/1000 wpctl set-default 58   # 比如想设置dp的声卡,编号是58
 
+# 一键脚本 (已装板端 /usr/local/bin/dp-sound, root 也能跑)
+dp-sound                                        # 自动找 Display Port sink 并设默认
+
+# 坑: root 直接 wpctl 报 Could not connect to PipeWire (session 属 firefly, 借
+#     XDG_RUNTIME_DIR); 设备无 pactl 只有 wpctl; 拔屏 sink 注销默认回落 ES8388,
+#     重插屏要重新 set-default
 
 # 播放视频
 sudo -u firefly XDG_RUNTIME_DIR=/run/user/1000 gst-play-1.0 4K_H264_bird.mp4

@@ -24,7 +24,7 @@ roc-rk3588s-pc / robotic-evb-v11) 的设备树配置, 供自研板移植参考�
 | HDMI | [hdmi.md](hdmi.md) | 单口 / itx 双口 + HDMI RX | 2026-10-29 |
 | MIPI CSI 摄像头 | [mipi-csi.md](mipi-csi.md) | IMX415 全链路 + 双摄 CAM0/CAM1 切换 | 2026-10-29 |
 | MIPI DSI 屏 | [mipi-dsi.md](mipi-dsi.md) | MIPI 屏完整序列+触摸+在位检测 / LT9211D 转 LVDS | 2026-10-29 |
-| Type-C | [typec.md](typec.md) | 全功能 (PD 充电+DP) / 非全功能 (仅 OTG+DP), 含 DP 无画面实战排查 (connector 图缺 dp0 边) | 2026-10-29 / 排查 2026-11-03 |
+| Type-C | [typec.md](typec.md) | 全功能 (PD 充电+DP) / 非全功能 (仅 OTG+DP), 含 DP 无画面实战排查 (connector 图缺 dp0 边) + DP 音频默认路由 (wpctl) | 2026-10-29 / 排查 2026-11-03 |
 | USB2.0 | [usb20.md](usb20.md) | usb_host0/1 口, u2phy 冲突说明 | 2026-10-29 |
 | USB3.0 | [usb30.md](usb30.md) | Type-A 5Gbps 口 + 一扩四场景 | 2026-10-29 |
 | CAN | [can.md](can.md) | 内置 can1/can2 + SPI MCP2518FD | 2026-10-29 |
@@ -36,6 +36,9 @@ roc-rk3588s-pc / robotic-evb-v11) 的设备树配置, 供自研板移植参考�
 | SD 卡 / SDIO | [sdcard.md](sdcard.md) | TF 卡 (sdmmc) + SDIO WiFi (sdio) / eMMC (sdhci) 全景 | 2026-10-29 |
 | 其他模块 | [misc-modules.md](misc-modules.md) | 风扇(手控/温控/FG) / MC3230 / 蜂鸣器 / INA226 / SPI spidev / RTL8126 5G 网口 / SW3203 / WOL / M.2 SSD | 2026-10-29 |
 | 充放电 | [charging.md](charging.md) | CW2017 电量计 + SC8886 充电芯片 + PD 三芯片联动 (原理/三条链路/8 必填属性值域表/移植/寄存器级调试) | 2026-10-29 |
+| 电源 | [power.md](power.md) | 12V→PMIC 整板供电树原理 / RK806+RK860x 完整 dts / 上电时序与调压者 / always-on·挂起策略 / regulator_summary 验证 | 2026-11-04 |
+| 设备树→驱动 | [drivers/dt-to-driver.md](drivers/dt-to-driver.md) | 七阶段全链路 (dtc→unflatten→populate→match→probe→modalias) / 属性↔驱动API 对照表 / 8 类接口机制差异 (platform/I2C/SPI/MDIO/USB/serdev/MFD/of_graph) / probe 错误码速查 / 排查决策树 | 2026-11-04 |
+| PHY 与高速控制器 | [drivers/phy-controller.md](drivers/phy-controller.md) | 控制器/PHY 两层模型 / 三类接口定位法 (GPIO复用·USB2模拟·SerDes) / 全部 15 颗 PHY 家族表 (含默认status) / 控制器↔PHY 绑定总表 / 冲突互斥组 / RK3588 vs S 增量 / 四步反查方法论 / 六种链路 DT 实例 / 板端验证与症状表 | 2026-11-04 |
 
 ## 待实现模块
 
