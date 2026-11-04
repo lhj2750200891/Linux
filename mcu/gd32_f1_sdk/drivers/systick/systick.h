@@ -11,7 +11,7 @@
 
 #include <stdint.h>
 
-void systick_init(void);
+/* 初始化由 DEVICE_INIT 自动完成 (main 之前), 应用层直接使用下面的 API */
 void sys_delay_us(uint32_t us);
 void sys_delay_ms(uint32_t ms);
 

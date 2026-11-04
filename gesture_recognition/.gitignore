@@ -1,0 +1,7 @@
+build/
+build-rk3588/
+*.o
+*.mp4
+*.avi
+.cache/
+compile_commands.json

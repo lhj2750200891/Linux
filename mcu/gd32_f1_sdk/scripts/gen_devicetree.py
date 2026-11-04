@@ -5,6 +5,10 @@
 流程: cpp 预处理 .dts -> dtc 编译成 .dtb -> 本脚本解析 dtb(扁平设备树 FDT 格式),
 按 compatible 识别硬件节点, 生成驱动可直接使用的 C 宏。
 
+status 属性 (与 Linux 语义一致, 控制"是否初始化", 而编译裁剪由 Kconfig 控制):
+  status = "okay" (或缺省)   节点启用, 生成实例表, 驱动经 DEVICE_INIT 自动初始化
+  status = "disabled"        节点禁用, 只生成 COUNT 0, 驱动不初始化(API 为空实现)
+
 支持的节点类型(由 compatible 区分):
   gd,gpio-leds        子节点 = LED。   容器属性: count;  子节点: gpios = <&gpio 引脚 模式>, init-level = <0|1>
   gd,gpio-keys        子节点 = 按键。   容器属性: count;  子节点: gpios = ..., active-level = <按下电平>
@@ -234,6 +238,13 @@ def generate(root, src_note):
 
     for node in walk(root):
         compat = prop_string(node, 'compatible')
+
+        # status = "disabled": 节点不生成实例表(驱动不初始化), 与 Linux 语义一致
+        if prop_string(node, 'status', 'okay') == 'disabled':
+            if compat in (CLASS_LED, CLASS_KEY, CLASS_MATRIX, CLASS_SYSTICK):
+                stats.append((node.name, compat + ' [disabled]', 0))
+            continue
+
         if compat == CLASS_LED:
             base = sanitize(node.name)
             present.add(base)
@@ -288,13 +299,14 @@ def generate(root, src_note):
             stats.append((node.name, compat, len(rows) * len(cols)))
         elif compat == CLASS_SYSTICK:
             freq = prop_u32(node, 'clock-frequency')    # CPU 时钟(Hz), SysTick 延时基准
-            present.add('SYSTICK')
             out.append('#define DT_SYSTICK_CLOCK_FREQUENCY %d' % freq)
+            present.add('SYSTICK')
             out.append('')
             stats.append((node.name, compat, 1))
 
-    # 兜底: 某类容器节点在设备树中不存在时补 0 宏,
+    # 兜底: 某类容器节点在设备树中不存在(或 status="disabled")时补 0 宏,
     # 驱动侧 #if DT_xxx_COUNT > 0 会走空实现, "驱动开了但板上没这硬件"也能编译
+    # (systick 特殊: disabled 时频率补 0, 驱动的 #error 会拦住)
     for base in ('LEDS', 'KEYS', 'MATRIX_KEYS_ROW', 'MATRIX_KEYS_COL'):
         if base not in present:
             emit_instances(out, base, [], [])

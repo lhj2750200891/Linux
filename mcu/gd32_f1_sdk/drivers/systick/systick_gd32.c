@@ -14,6 +14,7 @@
 #include "gd32f10x.h"
 #include "systick.h"
 #include "devicetree_generated.h"
+#include "init_fn_macros.h"
 
 #if DT_SYSTICK_CLOCK_FREQUENCY == 0
 #error "设备树缺少 systick 节点(gd,cortex-m-systick)或未配置 clock-frequency"
@@ -22,10 +23,11 @@
 /* 滴答时钟源 = CPU 时钟 / 8 */
 #define SYSTICK_FREQ   (DT_SYSTICK_CLOCK_FREQUENCY / 8U)
 
-void systick_init(void)
+static void systick_init(void)
 {
     SysTick->CTRL &= ~SysTick_CTRL_CLKSOURCE_Msk;    /* CLKSOURCE=0: 外部时钟 CPU/8 */
 }
+DEVICE_INIT(systick, systick_init, GD_INIT_EARLY);
 
 /* 装入计数值, 查询等待计数完成; 单次最大 (2^24-1) 个 tick */
 static void systick_delay_ticks(uint32_t ticks)

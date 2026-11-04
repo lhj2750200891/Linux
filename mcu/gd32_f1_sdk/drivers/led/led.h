@@ -19,7 +19,7 @@
 /* LED 个数(设备树描述, 驱动中不写死) */
 #define LED_COUNT   DT_LEDS_COUNT
 
-void led_init_all(void);
+/* 初始化由 DEVICE_INIT 自动完成 (main 之前), 应用层直接使用下面的 API */
 void led_set(uint8_t idx, uint8_t on);       /* idx: 0 ~ LED_COUNT-1 */
 void led_toggle(uint8_t idx);
 

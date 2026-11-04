@@ -1,6 +1,3 @@
-# 顶层 Kconfig —— make 配置体系的入口
-# 用法: 改配置直接编辑 .config, 或 make defconfig 恢复当前板卡的默认配置
-
 mainmenu "GD32F10x 固件框架"
 
 menu "板卡 / 芯片"

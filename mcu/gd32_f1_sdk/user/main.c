@@ -1,6 +1,10 @@
 /**
  * @file  main.c
- * @brief 应用入口 —— 硬件初始化全部由设备树 + 驱动完成, 按配置裁剪
+ * @brief 应用入口 —— 硬件初始化全部由设备树 + 驱动自动完成
+ *
+ * 驱动匹配条件: Kconfig CONFIG_DRIVER_xxx 启用 + 设备树存在对应节点。
+ * 匹配成功的驱动经 DEVICE_INIT 在 main 之前自动初始化(类似 Linux probe),
+ * 应用层只管调用 API, 不需要(也不应该)调用任何 xxx_init()。
  *
  * 应用层只使用设备树描述的"个数 + 索引", 不点名任何具体外设:
  *   LED_COUNT / led_set(i, x)   : i = 设备树 leds 子节点顺序
@@ -43,19 +47,6 @@ void LED_Display_Button_Value(uint8_t button_value)
 int main(void)
 {
     SCB->VTOR = FLASH_START;
-#ifdef CONFIG_DRIVER_SYSTICK
-    systick_init();          /* CPU 时钟频率来自设备树 systick 节点 */
-#endif
-
-#ifdef CONFIG_DRIVER_LED
-    led_init_all();          /* 个数/引脚来自设备树 leds 节点 */
-#endif
-#ifdef CONFIG_DRIVER_KEY
-    key_init_all();          /* 个数/引脚来自设备树 keys 节点 */
-#endif
-#ifdef CONFIG_DRIVER_MATRIX_KEY
-    matrix_key_init();       /* 行列来自设备树 matrix-keys 节点 */
-#endif
 
     while (1) {
 #ifdef CONFIG_DRIVER_SYSTICK

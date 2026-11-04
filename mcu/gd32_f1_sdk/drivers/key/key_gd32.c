@@ -6,20 +6,21 @@
 
 #include "systick.h"
 #include "gpio_gd32.h"
-
-uint8_t Key_Num = 0;
+#include "init_fn_macros.h"
 
 #if DT_KEYS_COUNT > 0
 
 /* 设备树编译期生成的按键实例表 (原硬编码驱动中的 key1~key4) */
 static const struct gd32_gpio_cfg dt_keys[DT_KEYS_COUNT] = { DT_KEYS_INSTANCES };
+uint8_t Key_Num = 0;
 
-void key_init_all(void)
+static void key_init_all(void)
 {
     for (uint8_t i = 0; i < DT_KEYS_COUNT; i++) {
         gd32_gpio_configure(&dt_keys[i]);
     }
 }
+DEVICE_INIT(key, key_init_all, GD_INIT_DEVICE);
 
 uint8_t key_read(uint8_t idx)
 {
@@ -70,7 +71,6 @@ uint8_t key_scan(void)
 #else /* 设备树中没有 key 节点: 提供空实现, 保证编译通过 */
 
 uint8_t Key_Num = 0;
-void key_init_all(void) {}
 uint8_t key_read(uint8_t idx) { (void)idx; return 0; }
 uint8_t key_scan(void) { return 0; }
 

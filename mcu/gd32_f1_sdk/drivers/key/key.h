@@ -22,7 +22,7 @@
 
 extern uint8_t Key_Num;    /**< 最近一次 key_scan() 的键值 (1~KEY_COUNT, 0=无) */
 
-void key_init_all(void);
+/* 初始化由 DEVICE_INIT 自动完成 (main 之前), 应用层直接使用下面的 API */
 uint8_t key_read(uint8_t idx);    /**< 读原始电平: 0/1 */
 uint8_t key_scan(void);           /**< 带消抖扫描, 返回键值(下标+1), 无按键返回 0 */
 

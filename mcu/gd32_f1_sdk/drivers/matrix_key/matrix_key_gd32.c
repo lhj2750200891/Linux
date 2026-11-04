@@ -6,6 +6,7 @@
 
 #include "systick.h"
 #include "gpio_gd32.h"
+#include "init_fn_macros.h"
 
 #if DT_MATRIX_KEYS_ROW_COUNT > 0 && DT_MATRIX_KEYS_COL_COUNT > 0
 
@@ -13,7 +14,7 @@
 static const struct gd32_gpio_cfg dt_rows[DT_MATRIX_KEYS_ROW_COUNT] = { DT_MATRIX_KEYS_ROW_INSTANCES };
 static const struct gd32_gpio_cfg dt_cols[DT_MATRIX_KEYS_COL_COUNT] = { DT_MATRIX_KEYS_COL_INSTANCES };
 
-void matrix_key_init(void)
+static void matrix_key_init(void)
 {
     for (uint8_t i = 0; i < DT_MATRIX_KEYS_ROW_COUNT; i++) {
         gd32_gpio_configure(&dt_rows[i]);
@@ -22,6 +23,7 @@ void matrix_key_init(void)
         gd32_gpio_configure(&dt_cols[i]);
     }
 }
+DEVICE_INIT(matrix_key, matrix_key_init, GD_INIT_DEVICE);
 
 /* 与原 button_scan() 行为一致: 逐行拉低扫描, 键值在松开时返回 */
 uint8_t matrix_key_scan(void)
@@ -54,7 +56,6 @@ uint8_t matrix_key_scan(void)
 
 #else /* 设备树中没有 matrix-keys 节点: 提供空实现 */
 
-void matrix_key_init(void) {}
 uint8_t matrix_key_scan(void) { return 0; }
 
 #endif

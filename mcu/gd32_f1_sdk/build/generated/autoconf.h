@@ -1,0 +1,15 @@
+/* 自动由 scripts/kconfigconf.py 生成, 请勿手改 */
+#ifndef BUILD_GENERATED_AUTOCONF_H
+#define BUILD_GENERATED_AUTOCONF_H
+
+#define CONFIG_CHIP_GD32F103RE 1
+#define CONFIG_BOARD_DTS "boards/gd32f103re/gd32f103re.dts"
+#define CONFIG_DRIVER_SYSTICK 1
+#define CONFIG_DRIVER_GPIO_GD32 1
+#define CONFIG_DRIVER_LED 1
+#define CONFIG_DRIVER_KEY 1
+#define CONFIG_KEY_DEBOUNCE_MS 20
+#define CONFIG_DRIVER_MATRIX_KEY 1
+#define CONFIG_MATRIX_ROW_DELAY_MS 10
+
+#endif
