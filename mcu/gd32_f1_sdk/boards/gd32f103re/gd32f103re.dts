@@ -68,4 +68,40 @@
 			    <&gpioa 5 GD32_MODE_IPU>,
 			    <&gpioa 6 GD32_MODE_IPU>;
 	};
+
+	uarts {
+		compatible = "gd,gd32-uart";
+		status = "okay";
+		count = <3>;
+
+		uart1 {
+			pgroup = <&usart0 0>;
+			baud-rate = <115200>;
+			data-bits = <GD32_UART_DATA_8>;
+			stop-bits = <GD32_UART_STOP_1>;
+			parity = <GD32_UART_PM_NONE>;
+			dma-mode = <1>;
+			int-mode = <GD32_UART_INT_IDLE>;
+			rx-pull = <0>;
+			rx-buf-size = <128>;
+			console = <1>;
+		};
+
+		uart2 {
+			pgroup = <&usart1 0>;
+		 	baud-rate = <9600>;
+		 	dma-mode = <0>;
+		 	int-mode = <GD32_UART_INT_RX_IDLE>;
+		 	rx-buf-size = <64>;
+		};
+		 
+		uart3 {
+		 	tx-gpios = <&gpioc 10 GD32_MODE_AF_PP>;
+		 	rx-gpios = <&gpioc 11 GD32_MODE_IN_FLOATING>;
+		 	uart-idx = <2>;
+		 	remap = <1>;
+		 	dma-mode = <0>;
+		 	int-mode = <GD32_UART_INT_NONE>;
+		};
+	};
 };

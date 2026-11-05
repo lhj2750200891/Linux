@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/gd,gpio-matrix-keys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: GD32F10x GPIO matrix keypad
+
+maintainers:
+  - lhj <houjun.li>
+
+description: |
+  矩阵键盘容器节点, 驱动 drivers/matrix_key/ 消费 (matrix_key_scan)。
+  行(row)配推挽输出逐行扫描, 列(col)配上拉输入读键;
+  返回键值 = 行号 * col-count + 列号 + 1。
+
+properties:
+  compatible:
+    const: gd,gpio-matrix-keys
+
+  row-count:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: 行数, 必须与 row-gpios 组数一致。
+
+  col-count:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: 列数, 必须与 col-gpios 组数一致。
+
+  row-gpios:
+    minItems: 1
+    description: 行引脚列表, 每组 <&gpio端口 引脚 模式>, 推荐全用
+      GD32_MODE_OUT_PP; 扫描时逐行拉低。
+
+  col-gpios:
+    minItems: 1
+    description: 列引脚列表, 推荐全用 GD32_MODE_IPU。
+
+  status:
+    enum: [okay, disabled]
+
+required:
+  - compatible
+  - row-count
+  - col-count
+  - row-gpios
+  - col-gpios
+
+additionalProperties: false
+
+examples:
+  - |
+    matrix-keys {
+        compatible = "gd,gpio-matrix-keys";
+        status = "okay";
+        row-count = <4>;
+        col-count = <3>;
+
+        row-gpios = <&gpioc 0 GD32_MODE_OUT_PP>,
+                    <&gpioc 1 GD32_MODE_OUT_PP>,
+                    <&gpioc 2 GD32_MODE_OUT_PP>,
+                    <&gpioc 3 GD32_MODE_OUT_PP>;
+        col-gpios = <&gpioa 4 GD32_MODE_IPU>,
+                    <&gpioa 5 GD32_MODE_IPU>,
+                    <&gpioa 6 GD32_MODE_IPU>;
+    };
+...

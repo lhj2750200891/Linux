@@ -1,0 +1,63 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/input/gd,gpio-keys.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: GD32F10x GPIO independent keys
+
+maintainers:
+  - lhj <houjun.li>
+
+description: |
+  独立按键容器节点, 驱动 drivers/key/ 消费 (key_scan / key_read)。
+  子节点 = 按键实例; key_scan() 返回键值 = 子节点下标 + 1。
+
+properties:
+  compatible:
+    const: gd,gpio-keys
+
+  count:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: 实例个数, 必须与子节点数一致 (脚本校验)。
+
+  status:
+    enum: [okay, disabled]
+
+patternProperties:
+  "^key[0-9a-z_-]+$":
+    type: object
+    properties:
+      gpios:
+        maxItems: 1
+        description: 单元格式 <&gpio端口 引脚号 模式>, 模式取
+          dt-bindings/gpio/gd32f10x-gpio.h (输入用 GD32_MODE_IPU/IPD/IN_FLOATING)。
+
+      active-level:
+        enum: [0, 1]
+        default: 0
+        description: 按下时的有效电平; "按下" = 读到电平与该值一致。
+
+    required:
+      - gpios
+    additionalProperties: false
+
+required:
+  - compatible
+  - count
+
+additionalProperties: false
+
+examples:
+  - |
+    keys {
+        compatible = "gd,gpio-keys";
+        status = "okay";
+        count = <2>;
+
+        /* 上拉输入, 按下接地: 低电平有效 */
+        key1 { gpios = <&gpioa 7 GD32_MODE_IPU>; active-level = <GD32_LEVEL_LOW>; };
+        /* 下拉输入, 按下接高: 高电平有效 */
+        key2 { gpios = <&gpioa 0 GD32_MODE_IPD>; active-level = <GD32_LEVEL_HIGH>; };
+    };
+...

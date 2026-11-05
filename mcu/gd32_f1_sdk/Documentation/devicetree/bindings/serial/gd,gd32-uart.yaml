@@ -1,0 +1,162 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/serial/gd,gd32-uart.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: GigaDevice GD32F10x UART/USART
+
+maintainers:
+  - lhj <houjun.li>
+
+description: |
+  裸机 SDK 的串口驱动绑定, 由 scripts/gen_devicetree.py 解析并在编译期
+  生成 C 实例表 (DT_UARTS_INSTANCES), 驱动 drivers/uart/ 消费。
+
+  节点分三层:
+    SoC dtsi:   gd,gd32-uart-periph     外设节点 (基址/序号)
+                gd,gd32-uart-pingroup   引脚分组 (TX/RX 组合表)
+    板级 dts:   gd,gd32-uart           uarts 容器, 子节点 = 实例
+
+  引脚两种描述方式二选一:
+    pgroup                    引用预定义组 (组号 0=默认, 1=重映射)
+    tx-gpios + rx-gpios       手动组合 (数据手册 2.6 节中任何标了
+                              USARTx_TX/RX 复用功能的引脚, 需写 uart-idx;
+                              若引脚属于重映射组还需 remap = <1>)
+
+  驱动模式 (每个实例独立):
+    dma-mode = 0, int-mode = 0              纯轮询
+    dma-mode = 0, int-mode = 1 (RX)         RBNE 每字节中断
+    dma-mode = 0, int-mode = 2 (IDLE)       仅空闲中断
+    dma-mode = 0, int-mode = 3 (RX|IDLE)    纯中断不定长接收
+    dma-mode = 1, int-mode = 2 (推荐)       DMA 收 + IDLE 判帧, TX 走 DMA
+                                            (UART4 无 DMA 通道, 自动退化为中断)
+
+properties:
+  compatible:
+    enum:
+      - gd,gd32-uart           # 板级实例容器
+      - gd,gd32-uart-periph    # SoC 外设节点
+      - gd,gd32-uart-pingroup  # SoC 引脚分组节点
+
+  reg:
+    maxItems: 1
+    description: 外设基址 (USART0=0x40013800 APB2, 其余 APB1)
+
+  count:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: 容器内实例个数 (必须与子节点数一致)
+
+  uart-idx:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    enum: [0, 1, 2, 3, 4]
+    description: |
+      0=USART0, 1=USART1, 2=USART2 (均有 DMA); 3=UART3 (DMA1);
+      4=UART4 (无 DMA)。periph/pingroup 节点必写; 手动组合引脚的实例必写。
+
+  groups:
+    $ref: /schemas/types.yaml#/definitions/uint32-array
+    description: |
+      引脚组表, 每组 6 单元: <组号 &tx端口 tx引脚 &rx端口 rx引脚 重映射>。
+      组号 0 是默认组(m0); 重映射 1 表示该组需要 AFIO 重映射。
+
+  '#pin-group-cells':
+    const: 1
+
+  pgroup:
+    $ref: /schemas/types.yaml#/definitions/phandle-array
+    description: 引用 periph 节点 + 组号, 形如 <&usart0 0>。
+
+  tx-gpios:
+    maxItems: 1
+    description: 手动组合 TX 引脚 (模式单元忽略, 驱动自配 AF_PP)。
+
+  rx-gpios:
+    maxItems: 1
+    description: 手动组合 RX 引脚 (模式单元忽略, 驱动按 rx-pull 配置)。
+
+  remap:
+    type: boolean
+    description: 手动组合引脚属于重映射组时置 1 (如 USART2 用 PC10/PC11)。
+
+  baud-rate:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 115200
+
+  data-bits:
+    enum: [0, 1]        # 0 = 8 位, 1 = 9 位
+    default: 0
+
+  stop-bits:
+    enum: [0, 1, 2]     # 0 = 1 位, 1 = 0.5 位, 2 = 2 位
+    default: 0
+
+  parity:
+    enum: [0, 2, 3]     # 0 = 无, 2 = 偶, 3 = 奇
+    default: 0
+
+  dma-mode:
+    type: boolean
+    description: 置 1 启用 DMA 收发。
+
+  int-mode:
+    enum: [0, 1, 2, 3]  # GD32_UART_INT_{NONE,RX,IDLE,RX_IDLE} (dt-bindings)
+    default: 0
+
+  rx-pull:
+    type: boolean
+    description: 置 1 RX 上拉输入, 否则浮空。
+
+  rx-buf-size:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 128
+    description: RX 环形缓冲区字节数 (须为 2 的幂效果最佳, DMA 循环回卷)。
+
+  console:
+    type: boolean
+    description: 置 1 时 printf 重定向到本实例 (整棵树至多一个)。
+
+required:
+  - compatible
+
+additionalProperties: false
+
+examples:
+  # SoC dtsi 片段
+  - |
+    uart0grp: pin-group@0 {
+        compatible = "gd,gd32-uart-pingroup";
+        uart-idx = <0>;
+        groups = <
+            /* m0: PA9=TX, PA10=RX (默认) */
+            0 &gpioa 9  &gpioa 10 0
+            /* m1: PB6=TX, PB7=RX (重映射) */
+            1 &gpiob 6  &gpiob 7  1>;
+    };
+
+  # 板级 dts: DMA + IDLE + printf console
+  - |
+    uarts {
+        compatible = "gd,gd32-uart";
+        count = <2>;
+
+        uart1 {
+            pgroup = <&usart0 0>;
+            baud-rate = <115200>;
+            dma-mode = <1>;
+            int-mode = <2>;       /* GD32_UART_INT_IDLE */
+            rx-buf-size = <128>;
+            console = <1>;
+        };
+
+        /* 手动组合引脚: USART2 部分重映射组 PC10/PC11, 纯中断接收 */
+        uart2 {
+            tx-gpios = <&gpioc 10 GD32_MODE_AF_PP>;
+            rx-gpios = <&gpioc 11 GD32_MODE_IN_FLOATING>;
+            uart-idx = <2>;
+            remap = <1>;
+            baud-rate = <9600>;
+            int-mode = <3>;       /* GD32_UART_INT_RX_IDLE */
+        };
+    };
+...

@@ -13,6 +13,16 @@ status 属性 (与 Linux 语义一致, 控制"是否初始化", 而编译裁剪�
   gd,gpio-leds        子节点 = LED。   容器属性: count;  子节点: gpios = <&gpio 引脚 模式>, init-level = <0|1>
   gd,gpio-keys        子节点 = 按键。   容器属性: count;  子节点: gpios = ..., active-level = <按下电平>
   gd,gpio-matrix-keys 容器属性: row-count, col-count;  row-gpios = <...>, <...>...;  col-gpios = <...>
+  gd,gd32-uart        子节点 = 串口实例。容器属性: count;
+                      子节点(两种引脚描述方式二选一):
+                        pgroup = <&usart0 0>   引用 dtsi 预定义引脚组(组号 0=m0, 1=m1...)
+                        tx-gpios = <&gpioa 9>, rx-gpios = <&gpiob 7>   用户手动组合引脚
+                        (数据手册 2.6 节中标了 USARTx_TX/RX 复用功能的引脚均可)
+                      子节点其他属性: baud-rate, line-ctl = <数据位 停止位 校验>,
+                      dma-mode = <0|1>, int-mode = <GD32_UART_INT_xxx>, rx-pull = <0|1>,
+                      console = <1>(printf 重定向到该实例)
+  gd,gd32-uart-pingroup  SoC dtsi 中的引脚组容器, groups 属性描述:
+                      <组号 &tx端口 tx引脚 &rx端口 rx引脚 是否重映射> ...
 
 外设个数(count 等)必须在设备树中描述, 本脚本校验它与实际子节点/引脚列表一致, 不一致则报错。
 
@@ -46,6 +56,9 @@ CLASS_LED = 'gd,gpio-leds'
 CLASS_KEY = 'gd,gpio-keys'
 CLASS_MATRIX = 'gd,gpio-matrix-keys'
 CLASS_SYSTICK = 'gd,cortex-m-systick'
+CLASS_UART = 'gd,gd32-uart'
+CLASS_UART_PINGROUP = 'gd,gd32-uart-pingroup'
+CLASS_UART_PERIPH = 'gd,gd32-uart-periph'
 
 
 class FdtError(Exception):
@@ -216,6 +229,145 @@ def emit_instances(out, macro_base, specs, levels):
     out.append('')
 
 
+# ---------------------------------------------------------------- UART ----
+
+def collect_uart_pingroups(root, phandles):
+    """解析 dtsi 中所有 gd,gd32-uart-pingroup 节点。
+
+    返回 {uart-idx: {组号: (tx_port, tx_pin, rx_port, rx_pin, remap)}}。
+    groups 属性每个条目 6 个单元:
+      <组号 &tx端口 tx引脚 &rx端口 rx引脚 是否重映射>
+    (&gpiox 引用经 dtc 变成 phandle 数值)
+    """
+    table = {}
+    for node in walk(root):
+        if prop_string(node, 'compatible') != CLASS_UART_PINGROUP:
+            continue
+        idx = prop_u32(node, 'uart-idx')
+        cells = prop_u32_list(node, 'groups')
+        if len(cells) % 6:
+            raise FdtError('节点 %s: groups 属性单元数不是 6 的倍数' % node.path())
+        entry = {}
+        for i in range(0, len(cells), 6):
+            grp, tx_ph, tx_pin, rx_ph, rx_pin, remap = cells[i:i + 6]
+            tx_node = phandles.get(tx_ph)
+            rx_node = phandles.get(rx_ph)
+            if tx_node is None or rx_node is None:
+                raise FdtError('节点 %s: groups 中的 phandle 无法解析' % node.path())
+            entry[grp & 0xFF] = (prop_u32(tx_node, 'port-idx'), tx_pin,
+                                 prop_u32(rx_node, 'port-idx'), rx_pin,
+                                 remap & 0x01)
+        table[idx] = entry
+    return table
+
+
+class UartInstance(object):
+    """设备树 uart 子节点解析结果 (字段与 struct gd32_uart_cfg 一一对应)"""
+
+    def __init__(self):
+        self.periph = 0            # USART0/1/2, UART3/4 基址宏名 (来自父 SoC 节点 reg)
+        self.uart_idx = 0
+        self.tx_port = 0
+        self.tx_pin = 0
+        self.rx_port = 0
+        self.rx_pin = 0
+        self.remap = 0
+        self.rx_pull = 0
+        self.data_bits = 0
+        self.stop_bits = 0
+        self.parity = 0
+        self.dma_mode = 0
+        self.int_mode = 0
+        self.console = 0
+        self.baud_rate = 115200
+        self.rx_buf_size = 128
+
+    def emit_line(self):
+        return ('{ .periph = %s, .uart_idx = %u, '
+                '.tx_port = %u, .tx_pin = %u, .rx_port = %u, .rx_pin = %u, '
+                '.remap = %u, .rx_pull = %u, .data_bits = %u, .stop_bits = %u, '
+                '.parity = %u, .dma_mode = %u, .int_mode = %u, .console = %u, '
+                '.baud_rate = %u, .rx_buf_size = %u }'
+                % (self.periph, self.uart_idx, self.tx_port, self.tx_pin,
+                   self.rx_port, self.rx_pin, self.remap, self.rx_pull,
+                   self.data_bits, self.stop_bits, self.parity,
+                   self.dma_mode, self.int_mode, self.console,
+                   self.baud_rate, self.rx_buf_size))
+
+
+# uart-idx (引用的 SoC uart 节点) -> 外设基址宏名
+def uart_periph_macro(idx):
+    names = ['USART0', 'USART1', 'USART2', 'UART3', 'UART4']
+    if idx >= len(names):
+        raise FdtError('uart-idx %d 超出范围 (0~4)' % idx)
+    return names[idx]
+
+
+def uart_parse_instance(node, root, phandles, pingroups):
+    """解析一个 uart 子节点 (uarts 容器的直接子节点)。
+
+    引脚两种写法 (二选一, 都写以 pgroup 为准):
+      pgroup = <&usart0 1>                    预定义引脚组 (dtsi 中的 pin-group 节点)
+      tx-gpios = <&gpioa 9>, rx-gpios = <&gpiob 7>   手动组合 (数据手册 2.6 节复用脚)
+    """
+    inst = UartInstance()
+
+    # ---- 引脚与外设序号: pgroup 优先 ----
+    if 'pgroup' in node.props:
+        cells = prop_u32_list(node, 'pgroup')
+        if len(cells) != 2:
+            raise FdtError('节点 %s: pgroup 应为 <&uartx 组号> 两个单元' % node.path())
+        grp_node = phandles.get(cells[0])
+        if grp_node is None:
+            raise FdtError('节点 %s: pgroup 引用无法解析' % node.path())
+        grp = cells[1] & 0xFF
+        # 从被引用的 SoC uart 外设节点取 uart-idx (决定 periph 宏名)
+        inst.uart_idx = prop_u32(grp_node, 'uart-idx')
+        table = pingroups.get(inst.uart_idx)
+        if table is None or grp not in table:
+            raise FdtError('节点 %s: 串口 %d 的引脚组 %d 不存在 (检查 dtsi pin-group 节点)'
+                           % (node.path(), inst.uart_idx, grp))
+        tx_port, tx_pin, rx_port, rx_pin, remap = table[grp]
+        inst.tx_port, inst.tx_pin = tx_port, tx_pin
+        inst.rx_port, inst.rx_pin = rx_port, rx_pin
+        inst.remap = remap
+    elif 'tx-gpios' in node.props and 'rx-gpios' in node.props:
+        # 手动组合: tx/rx 各一个 gpio 引用; uart-idx 必须由本节点 uart-idx 属性给出
+        if 'uart-idx' in node.props:
+            inst.uart_idx = prop_u32(node, 'uart-idx')
+        else:
+            raise FdtError('节点 %s: 手动组合引脚时必须提供 uart-idx 属性 '
+                           '(标明属于 USART0~UART4 中哪个串口)' % node.path())
+        tx = parse_gpio_specs(node, 'tx-gpios', root, phandles)
+        rx = parse_gpio_specs(node, 'rx-gpios', root, phandles)
+        if len(tx) != 1 or len(rx) != 1:
+            raise FdtError('节点 %s: tx-gpios/rx-gpios 应各只有一组引脚' % node.path())
+        inst.tx_port, inst.tx_pin = tx[0][0], tx[0][1]
+        inst.rx_port, inst.rx_pin = rx[0][0], rx[0][1]
+        inst.remap = prop_u32(node, 'remap', 0)    # 手动组合时由用户指明是否重映射
+    else:
+        raise FdtError('节点 %s: 缺少引脚描述 (pgroup 或 tx-gpios+rx-gpios 二选一)'
+                       % node.path())
+
+    inst.periph = uart_periph_macro(inst.uart_idx)
+
+    # ---- 其余属性 (均有缺省值) ----
+    inst.baud_rate = prop_u32(node, 'baud-rate', 115200)
+    inst.data_bits = prop_u32(node, 'data-bits', 0)       # GD32_UART_DATA_8/9
+    inst.stop_bits = prop_u32(node, 'stop-bits', 0)       # GD32_UART_STOP_1/0_5/2
+    inst.parity = prop_u32(node, 'parity', 0)             # GD32_UART_PM_NONE/EVEN/ODD
+    inst.dma_mode = prop_u32(node, 'dma-mode', 0)         # 0=关 1=开 (UART4 无 DMA 自动退化)
+    inst.int_mode = prop_u32(node, 'int-mode', 0)         # GD32_UART_INT_xxx
+    inst.rx_pull = prop_u32(node, 'rx-pull', 0)           # RX 输入: 0=浮空 1=上拉
+    inst.console = prop_u32(node, 'console', 0)           # 1=printf 重定向到本实例
+    inst.rx_buf_size = prop_u32(node, 'rx-buf-size', 128)
+
+    if inst.baud_rate == 0 or inst.baud_rate > 4000000:
+        raise FdtError('节点 %s: baud-rate %d 不合理' % (node.path(), inst.baud_rate))
+    return inst
+
+
+
 def generate(root, src_note):
     out = []
     out.append('/*')
@@ -234,6 +386,7 @@ def generate(root, src_note):
     used_macros = set()
     present = set()          # 设备树中实际出现的容器 (宏基名)
     phandles = build_phandle_map(root)
+    pingroups = collect_uart_pingroups(root, phandles)
     stats = []
 
     for node in walk(root):
@@ -241,7 +394,7 @@ def generate(root, src_note):
 
         # status = "disabled": 节点不生成实例表(驱动不初始化), 与 Linux 语义一致
         if prop_string(node, 'status', 'okay') == 'disabled':
-            if compat in (CLASS_LED, CLASS_KEY, CLASS_MATRIX, CLASS_SYSTICK):
+            if compat in (CLASS_LED, CLASS_KEY, CLASS_MATRIX, CLASS_SYSTICK, CLASS_UART):
                 stats.append((node.name, compat + ' [disabled]', 0))
             continue
 
@@ -303,6 +456,38 @@ def generate(root, src_note):
             present.add('SYSTICK')
             out.append('')
             stats.append((node.name, compat, 1))
+        elif compat == CLASS_UART:
+            base = sanitize(node.name)
+            present.add(base)
+            count = prop_u32(node, 'count')
+            idents = []
+            inst_lines = []
+            max_buf = 1
+            for child in node.children:
+                inst = uart_parse_instance(child, root, phandles, pingroups)
+                if inst.rx_buf_size > max_buf:
+                    max_buf = inst.rx_buf_size
+                idents.append(child.name)
+                inst_lines.append(inst.emit_line())
+            check_count(node, 'count', count, len(inst_lines))
+            out.append('#define DT_%s_COUNT %d' % (base, len(inst_lines)))
+            if inst_lines:
+                out.append('#define DT_%s_INSTANCES \\' % base)
+                for i, line in enumerate(inst_lines):
+                    if i != len(inst_lines) - 1:
+                        line += ', \\'
+                    out.append('\t' + line)
+                out.append('')
+            # 驱动的静态接收缓冲数组按最大实例缓冲区对齐
+            out.append('#define DT_%s_MAX_BUF_SIZE %d' % (base, max_buf))
+            for idx, ident in enumerate(idents):
+                macro = 'DT_%s_IDX' % sanitize(ident)
+                if macro in used_macros:
+                    raise FdtError('重复的节点名: %s' % ident)
+                used_macros.add(macro)
+                out.append('#define %s %d' % (macro, idx))
+            out.append('')
+            stats.append((node.name, compat, len(inst_lines)))
 
     # 兜底: 某类容器节点在设备树中不存在(或 status="disabled")时补 0 宏,
     # 驱动侧 #if DT_xxx_COUNT > 0 会走空实现, "驱动开了但板上没这硬件"也能编译
@@ -310,6 +495,10 @@ def generate(root, src_note):
     for base in ('LEDS', 'KEYS', 'MATRIX_KEYS_ROW', 'MATRIX_KEYS_COL'):
         if base not in present:
             emit_instances(out, base, [], [])
+    if 'UARTS' not in present:
+        out.append('#define DT_UARTS_COUNT 0')
+        out.append('#define DT_UARTS_MAX_BUF_SIZE 1')
+        out.append('')
     if 'SYSTICK' not in present:
         out.append('#define DT_SYSTICK_CLOCK_FREQUENCY 0')
         out.append('')

@@ -1,0 +1,44 @@
+# SPDX-License-Identifier: GPL-2.0-only OR BSD-2-Clause
+%YAML 1.2
+---
+$id: http://devicetree.org/schemas/timer/gd,cortex-m-systick.yaml#
+$schema: http://devicetree.org/meta-schemas/core.yaml#
+
+title: ARM Cortex-M3 SysTick (delay timer)
+
+maintainers:
+  - lhj <houjun.li>
+
+description: |
+  内核 SysTick 延时驱动 (drivers/systick/, sys_delay_us / sys_delay_ms)。
+  位于 SoC dtsi; clock-frequency 是延时基准, 需与 vendor 库实际主频配置
+  一致 (默认 __SYSTEM_CLOCK_108M_PLL); 板卡换主频时在板级 dts 覆写。
+
+properties:
+  compatible:
+    const: gd,cortex-m-systick
+
+  reg:
+    maxItems: 1
+    description: SysTick 基址 0xe000e010, 长度 0x10。
+
+  clock-frequency:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    description: CPU 时钟 Hz。注意本工程该值必须与 system_gd32f10x.c
+      的主频配置一致, 否则延时计时不准。
+
+required:
+  - compatible
+  - reg
+  - clock-frequency
+
+additionalProperties: false
+
+examples:
+  - |
+    systick: systick@e000e010 {
+        compatible = "gd,cortex-m-systick";
+        reg = <0xe000e010 0x10>;
+        clock-frequency = <108000000>;
+    };
+...

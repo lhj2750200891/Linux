@@ -58,5 +58,23 @@ config MATRIX_ROW_DELAY_MS
 	depends on DRIVER_MATRIX_KEY
 	help
 		  矩阵扫描拉低每一行后, 等待电平稳定的时间。
+config DRIVER_UART
+	bool "UART/USART 串口驱动 (设备树 uarts 节点)"
+	default y
+	depends on DRIVER_GPIO_GD32
+	help
+		  扫描设备树中 compatible = "gd,gd32-uart" 的 uarts 节点, 生成串口实例表。
+		  每个实例支持三种工作模式(设备树 dma-mode/int-mode 属性):
+		  纯轮询 / 中断(RBNE+IDLE) / DMA 收发(空闲中断判帧), printf 可重定向到
+		  console=1 的实例。引脚可用 dtsi 预定义组(pgroup)或手动组合
+		  (数据手册 2.6 节中标了 USARTx_TX/RX 的任意引脚)。
+
+config DRIVER_UART_PRINTF
+	bool "printf 重定向到 console 串口"
+	default y
+	depends on DRIVER_UART
+	help
+		  重定向 newlib 的 _write() 到设备树中 console=1 的 uart 实例,
+		  应用层直接使用 printf 即可输出。
 
 endmenu

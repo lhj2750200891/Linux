@@ -174,9 +174,9 @@ CONFIG_ROCKCHIP_HDMIRX=y           # HDMI RX (需要 HDMI 输入时)
 
 ```
 HDMI TX0 (差分对直接走连接器, 由 hdptxphy0 输出, 无需设备树引脚配置):
-  CEC  ====> GPIO4_C1 (hdmim0_tx0_cec, 节点默认)
+  CEC  ====> GPIO4_C1 (hdmim0_tx0_cec, 节点默认)         # 用来发送指令
   HPD  ====> GPIO1_A5 (hdmim0_tx0_hpd, 节点默认)
-  DDC SCL ====> GPIO4_B7 (hdmim0_tx0_scl, 节点默认)
+  DDC SCL ====> GPIO4_B7 (hdmim0_tx0_scl, 节点默认)       # DDC 用来读取屏幕参数，比如EDID
   DDC SDA ====> GPIO4_C0 (hdmim0_tx0_sda, 节点默认)
   HDMI 5V 电源使能 ====> GPIO4_A0 (enable-gpios, 高有效)
 ```
