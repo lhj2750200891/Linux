@@ -53,7 +53,7 @@ ls /media/lhj/data/t-chip/7.code/unitree_sdk2/build/bin
 
 ```
 cd /media/lhj/data/t-chip/7.code/unitree_sdk2/build/bin
-./go2_low_level 网卡序号     # j
+./go2_low_level 网卡序号     # 就是ifconfig查出来的
 ```
 
 
