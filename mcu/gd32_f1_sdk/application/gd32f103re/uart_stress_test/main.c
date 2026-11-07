@@ -18,11 +18,17 @@
 
 #include "uart_gd32.h"
 
-/* 收到一帧: 回显字节数 + 原始内容 (帧边界由 IDLE 空闲中断判定) */
+/* 每口帧计数: 收到一帧 +1, 回显带序号 —— 发送端数次数, 接收端看最后序号
+ * 是否相等、中间有无跳号, 丢没丢帧一眼可见 */
+static uint32_t rx_count[3];
+
+/* 收到一帧: 回显 [序号] 字节数 + 原始内容 (帧边界由 IDLE 空闲中断判定) */
 static void port_echo(uint8_t idx, const char *name)
 {
     if (uart_idle_frame(idx) > 0) {
-        uart_printf(idx, "[%s] got %u bytes: ", name, uart_available(idx));
+        rx_count[idx]++;
+        uart_printf(idx, "[%s] #%lu got %u bytes: ", name,
+                    (unsigned long)rx_count[idx], uart_available(idx));
         int16_t c;
         while ((c = uart_read(idx)) >= 0) {
             uart_send(idx, (const uint8_t *)&c, 1);    /* 逐字节透传 */
