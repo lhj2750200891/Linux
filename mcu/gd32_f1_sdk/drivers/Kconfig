@@ -36,13 +36,6 @@ config DRIVER_KEY
 		  扫描设备树中 compatible = "gd,gpio-keys" 的节点, 提供按键消抖
 		  扫描 key_scan() 与 KEY1~KEY4 读电平宏。
 
-config KEY_DEBOUNCE_MS
-	int "按键消抖延时 (ms)"
-	default 20
-	depends on DRIVER_KEY
-	help
-		  key_scan() 检测到按键按下后的消抖延时。
-
 config DRIVER_MATRIX_KEY
 	bool "矩阵键盘驱动 (设备树 matrix-keys 节点)"
 	default y

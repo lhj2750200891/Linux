@@ -10,8 +10,14 @@ maintainers:
   - lhj <houjun.li>
 
 description: |
-  独立按键容器节点, 驱动 drivers/key/ 消费 (key_scan / key_read)。
+  独立按键容器节点, 驱动 drivers/key/ 消费 (key_scan / key_read / key_callback)。
   子节点 = 按键实例; key_scan() 返回键值 = 子节点下标 + 1。
+
+  两种工作方式由 key-mode 选择:
+    KEY_MODE_IRQ  (默认) EXTI 外部中断, 免主循环轮询;
+                  每键触发类型 trigger 可配 (上升/下降/双沿)
+    KEY_MODE_POLL        纯轮询, 应用周期调 key_scan(), 消抖时间 debounce-ms
+  (常量定义: arm/include/dt-bindings/input/gd32f10x-key.h)
 
 properties:
   compatible:
@@ -20,6 +26,18 @@ properties:
   count:
     $ref: /schemas/types.yaml#/definitions/uint32
     description: 实例个数, 必须与子节点数一致 (脚本校验)。
+
+  key-mode:
+    enum: [0, 1]
+    default: 0
+    description: |
+      0 = KEY_MODE_IRQ   EXTI 中断 (默认)
+      1 = KEY_MODE_POLL  轮询
+
+  debounce-ms:
+    $ref: /schemas/types.yaml#/definitions/uint32
+    default: 20
+    description: 轮询模式消抖时间 (ms), 仅 key-mode=<KEY_MODE_POLL> 生效。
 
   status:
     enum: [okay, disabled]
@@ -35,8 +53,24 @@ patternProperties:
 
       active-level:
         enum: [0, 1]
-        default: 0
-        description: 按下时的有效电平; "按下" = 读到电平与该值一致。
+        description: |
+          按下时的有效电平; "按下" = 读到电平与该值一致。
+          缺省按引脚上下拉推导 (显式配置优先):
+            GD32_MODE_IPU (上拉) -> 按下接地 -> 低有效(0)
+            GD32_MODE_IPD (下拉) -> 按下接高 -> 高有效(1)
+            浮空/模拟输入 -> 默认低有效(0)
+
+      trigger:
+        enum: [0, 1, 2]
+        description: |
+          EXTI 中断触发类型, 仅 key-mode=<KEY_MODE_IRQ> 生效
+          (轮询模式不用 trigger, 高/低有效按键均可):
+            0 = KEY_TRIG_RISING   上升沿
+            1 = KEY_TRIG_FALLING  下降沿
+            2 = KEY_TRIG_BOTH     双沿 (按下与松开都触发)
+          缺省按有效电平推导: 低有效 -> 下降沿(1), 高有效 -> 上升沿(0)。
+          注意: EXTI 线号 = 引脚号, 同一引脚号 (不同端口) 的两个按键
+          不能同时用中断模式 (AFIO 信号源只有一个)。
 
     required:
       - gpios
@@ -54,10 +88,28 @@ examples:
         compatible = "gd,gpio-keys";
         status = "okay";
         count = <2>;
+        key-mode = <KEY_MODE_IRQ>;    /* EXTI 中断 (默认, 可省略) */
 
-        /* 上拉输入, 按下接地: 低电平有效 */
+        /* 上拉输入, 按下接地: 低电平有效, 下降沿触发 */
+        key1 { gpios = <&gpioa 7 GD32_MODE_IPU>;
+               active-level = <GD32_LEVEL_LOW>;
+               trigger = <KEY_TRIG_FALLING>; };
+
+        /* 下拉输入, 按下接高: 高电平有效, 上升沿触发 */
+        key2 { gpios = <&gpioa 0 GD32_MODE_IPD>;
+               active-level = <GD32_LEVEL_HIGH>;
+               trigger = <KEY_TRIG_RISING>; };
+    };
+
+  - |
+    keys {
+        compatible = "gd,gpio-keys";
+        status = "okay";
+        count = <2>;
+        key-mode = <KEY_MODE_POLL>;    /* 轮询: 主循环周期调 key_scan() */
+        debounce-ms = <30>;            /* 消抖 30ms */
+
         key1 { gpios = <&gpioa 7 GD32_MODE_IPU>; active-level = <GD32_LEVEL_LOW>; };
-        /* 下拉输入, 按下接高: 高电平有效 */
         key2 { gpios = <&gpioa 0 GD32_MODE_IPD>; active-level = <GD32_LEVEL_HIGH>; };
     };
 ...

@@ -27,6 +27,7 @@
 #include <stdint.h>
 
 #include "gd32f10x_usart.h"
+#include "devicetree_generated.h"    /* DT_UARTS_COUNT / DT_UART1_IDX 等设备树宏 */
 
 /* 设备树 uart 实例配置 (字段与 gen_devicetree.py 生成的 DT_UARTx_INSTANCES 对应) */
 struct gd32_uart_cfg {
@@ -66,9 +67,11 @@ void uart_send(uint8_t idx, const uint8_t *data, uint16_t len);
 
 /* printf 重定向底层实现 (console 实例), 内部调用 uart_send */
 void uart_putc(uint8_t ch);
+void uart_printf(uint8_t idx, const char *fmt, ...);   /* 指定串口 printf 语法输出 (默认口看 console=1) */
 
 /* 接收: 从环形缓冲区读 1 字节, 无数据返回 -1 */
 int16_t uart_read(uint8_t idx);
+int  uart_poll_read(uint8_t idx);   /* 纯轮询模式专用 (int-mode=NONE): RBNE 查询读 */
 
 /* 接收: 环形缓冲区内可读字节数 */
 uint16_t uart_available(uint8_t idx);

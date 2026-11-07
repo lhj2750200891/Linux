@@ -7,6 +7,7 @@
  */
 
 #include <dt-bindings/gpio/gd32f10x-gpio.h>
+#include <dt-bindings/input/gd32f10x-key.h>
 #include <dt-bindings/serial/gd32f10x-uart.h>
 
 / {

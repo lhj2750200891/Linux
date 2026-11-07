@@ -21,6 +21,7 @@ struct gd32_gpio_cfg {
 	uint8_t level;   /**< 语义由上层驱动解释:
 			  *   输出类(LED/矩阵行) -> 上电初始电平
 			  *   输入类(按键/矩阵列) -> 按下时的有效电平 */
+	uint8_t trigger; /**< 仅按键驱动使用: EXTI 触发类型 KEY_TRIG_* (其他实例为 0) */
 };
 
 void gd32_gpio_configure(const struct gd32_gpio_cfg *cfg);

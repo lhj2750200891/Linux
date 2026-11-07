@@ -251,7 +251,7 @@ compatible 一份, 含属性约束与完整示例)。
 | LED | `LED_COUNT`, `led_init_all()`, `led_set(idx, on)`, `led_toggle(idx)` |
 | 按键 | `KEY_COUNT`, `key_init_all()`, `key_read(idx)`, `key_scan()` |
 | 矩阵键盘 | `matrix_key_init()`, `matrix_key_scan()` |
-| UART | `uart_send(idx, buf, len)`, `uart_read(idx, buf, len)`, `uart_available(idx)`, `uart_idle_frame(idx, buf, len)` |
+| UART | `uart_send(idx, buf, len)`, `uart_printf(idx, fmt, ...)`(指定串口 printf 语法输出), `uart_read(idx)`, `uart_available(idx)`, `uart_idle_frame(idx)`, `uart_poll_read(idx)`(纯轮询模式) |
 
 UART 三种工作模式由设备树组合决定(应用层只需写回调):
 - `dma-mode=<1>` + `int-mode=<GD32_UART_INT_IDLE>`:DMA 循环收 + 空闲中断判帧;

@@ -24,6 +24,11 @@ extern uint8_t Key_Num;    /**< 最近一次 key_scan() 的键值 (1~KEY_COUNT, 
 
 /* 初始化由 DEVICE_INIT 自动完成 (main 之前), 应用层直接使用下面的 API */
 uint8_t key_read(uint8_t idx);    /**< 读原始电平: 0/1 */
-uint8_t key_scan(void);           /**< 带消抖扫描, 返回键值(下标+1), 无按键返回 0 */
+uint8_t key_scan(void);           /**< 带消抖扫描, 返回键值(下标+1), 无按键返回 0
+                                       (中断模式下从事件标志取, 应用代码两种模式通用) */
+
+/* 弱回调 (仅中断模式 key-mode=<KEY_MODE_IRQ> 触发): 按键事件发生时在中断
+ * 上下文执行, 应用可覆盖; 应尽量短, 只置标志/存事件, 别做延时和 printf */
+void key_callback(uint8_t idx);
 
 #endif

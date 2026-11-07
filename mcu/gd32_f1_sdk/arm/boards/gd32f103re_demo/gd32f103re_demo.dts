@@ -26,10 +26,12 @@
 		compatible = "gd,gpio-keys";
 		status = "okay";
 		count = <1>;
+		key-mode = <KEY_MODE_IRQ>;    /* EXTI 中断(默认); 轮询改 KEY_MODE_POLL + debounce-ms */
 
 		key1 {
 			gpios = <&gpioa 0 GD32_MODE_IPU>;
 			active-level = <GD32_LEVEL_LOW>;
+			trigger = <KEY_TRIG_FALLING>;
 		};
 	};
 };

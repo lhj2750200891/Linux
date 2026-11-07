@@ -19,6 +19,9 @@
 #include "uart_gd32.h"
 
 #include <stddef.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <string.h>
 
 #include "gd32f10x.h"
 #include "devicetree_generated.h"
@@ -81,6 +84,14 @@ static const struct gd32_uart_cfg dt_uarts[DT_UARTS_COUNT] = { DT_UARTS_INSTANCE
 static uint8_t uart_rx_bufs[DT_UARTS_COUNT][DT_UARTS_MAX_BUF_SIZE];
 static struct gd32_uart_dev uart_devs[DT_UARTS_COUNT];
 
+/* DMA TX 异步中转区: uart_send 返回后 DMA 仍在继续读源缓冲区。若源是调用方
+ * 的栈缓冲 (uart_printf 的格式化 buf / 应用局部数组), 函数返回后即被后续
+ * 调用覆盖, 实测表现为回显首字节被吞/夹带幻影字符 —— 曾经的"首字节丢失"
+ * 其实一直是这个问题, RX 从来没丢过字节。因此 DMA 只从这块静态区读;
+ * 超过中转区长度的发送自动分段, 段间等待发完再复用。 */
+#define UART_TX_STAGE_SIZE 256
+static uint8_t uart_tx_stage[DT_UARTS_COUNT][UART_TX_STAGE_SIZE];
+
 /* printf console 实例下标 (设备树 console=1 的那个, 没有则为 0xFF) */
 static uint8_t uart_console_idx = 0xFF;
 
@@ -117,6 +128,13 @@ static uint16_t uart_rb_unread(const struct gd32_uart_dev *dev)
 static inline struct gd32_uart_dev *uart_get(uint8_t idx)
 {
     return (idx < DT_UARTS_COUNT) ? &uart_devs[idx] : NULL;
+}
+
+/* 硬件外设号 -> 外设基址 (仅分发器兜底空读寄存器用) */
+static uint32_t uart_periph_base[] = { USART0, USART1, USART2, UART3, UART4 };
+static inline uint32_t uart_periph_of(uint8_t hw_idx)
+{
+    return (hw_idx < 5U) ? uart_periph_base[hw_idx] : USART0;
 }
 
 /* 实例是否真的用 DMA (UART4 没有通道, 声明了也退化为中断) */
@@ -300,14 +318,18 @@ void uart_send(uint8_t idx, const uint8_t *data, uint16_t len)
     }
     const struct gd32_uart_cfg *cfg = dev->cfg;
 
-    /* DMA 发送: 数据必须在整个传输期间保持有效。若上一帧还没发完,
-     * 先等它结束 (查询方式, 不依赖应用调用 uart_tx_done)。发送期间
-     * 标记 tx_busy, 应用可用 uart_tx_done() 查询/或不管, 下一帧发送
-     * 时驱动会自动等待。 */
+    /* DMA 发送: 数据拷贝到本实例静态中转区, DMA 只读静态内存。
+     * 超过中转区长度自动分段 (段间等待上一段发完)。 */
     if (uart_use_dma(cfg)) {
-        while (!uart_tx_done(idx)) { }      /* 等上一帧 DMA 发送完成 */
-        dev->tx_busy = 1;
-        uart_dma_tx_start(dev, data, len);
+        while (len > 0) {
+            uint16_t n = (len > UART_TX_STAGE_SIZE) ? UART_TX_STAGE_SIZE : len;
+            while (!uart_tx_done(idx)) { }      /* 等上一段发完 */
+            memcpy(uart_tx_stage[idx], data, n);
+            dev->tx_busy = 1;
+            uart_dma_tx_start(dev, uart_tx_stage[idx], n);
+            data += n;
+            len = (uint16_t)(len - n);
+        }
         return;
     }
 
@@ -315,6 +337,28 @@ void uart_send(uint8_t idx, const uint8_t *data, uint16_t len)
     for (uint16_t i = 0; i < len; i++) {
         while (RESET == usart_flag_get(cfg->periph, USART_FLAG_TBE)) { }
         usart_data_transmit(cfg->periph, data[i]);
+    }
+}
+
+/* 指定串口的 printf 语法输出 (等价 STM32 HAL 的 USART_printf):
+ * idx = 设备树实例下标 (uart1 节点 -> DT_UART1_IDX), 格式化后走 uart_send。
+ * 默认 printf 口由设备树 console=<1> 的实例承担 (通常 uart0/USART0);
+ * 其他串口要打日志/协议文本时用本函数。
+ * 注意: DMA 模式下 uart_send 内部会等上一帧发完, 别在中断上下文调用。 */
+void uart_printf(uint8_t idx, const char *fmt, ...)
+{
+    char buf[256];
+    va_list args;
+
+    va_start(args, fmt);
+    int n = vsnprintf(buf, sizeof(buf), fmt, args);
+    va_end(args);
+
+    if (n > 0) {
+        if ((uint32_t)n >= sizeof(buf)) {
+            n = (int)sizeof(buf) - 1;    /* 截断保护 */
+        }
+        uart_send(idx, (const uint8_t *)buf, (uint16_t)n);
     }
 }
 
@@ -434,19 +478,34 @@ void gd32_uart_irq_handler(uint8_t idx)
     /* IDLE: 一帧结束 —— DMA 模式下同步 head 计算帧长;
      *       纯中断模式下只通知帧边界 (RBNE 已把数据入环形缓冲区) */
     if (SET == usart_interrupt_flag_get(cfg->periph, USART_INT_FLAG_IDLE)) {
-        (void)usart_data_receive(cfg->periph);              /* 读 DATA 清 IDLE 标志 */
-
+        /* IDLE 清除序列: flag_get 已读 STAT0, 这里读 DATA 完成清除。
+         * DMA 模式下数据已被 DMA 搬进环形缓冲区 (DMAR 使能后 RBNE 不会置位,
+         * CPU 空读 DATA 与 DMA 无竞争); 纯中断模式数据已由 RBNE 中断入队。
+         * 帧长 = head 同步后的未读字节数。*/
+        (void)usart_data_receive(cfg->periph);
         uint16_t len;
         if (uart_use_dma(cfg)) {
-            uart_dma_head_update(dev);
-            len = uart_rb_unread(dev);                      /* 本帧未读字节数 */
-        } else {
-            len = uart_rb_unread(dev);
+            uart_dma_head_update(dev);                      /* 同步 DMA 写指针 */
         }
+        len = uart_rb_unread(dev);
         dev->idle_len = len;
         dev->idle_flag = 1;
         uart_idle_callback(idx, len);                       /* weak 回调 */
     }
+}
+
+/* 纯轮询读 (dma=0, int-mode=<GD32_UART_INT_NONE>): 查 RBNE 标志直接读
+ * DATA 寄存器。不开任何中断; 其他模式下请用 uart_read() (环形缓冲区)。 */
+int uart_poll_read(uint8_t idx)
+{
+    struct gd32_uart_dev *dev = uart_get(idx);
+    if (dev == NULL) {
+        return -1;
+    }
+    if (SET == usart_flag_get(dev->cfg->periph, USART_FLAG_RBNE)) {
+        return (int)usart_data_receive(dev->cfg->periph);    /* 读 DATA 同时清标志 */
+    }
+    return -1;
 }
 
 /* 弱回调默认实现: 应用层覆盖即可 (在 UART ISR 上下文执行, 应尽量短) */
@@ -456,12 +515,25 @@ __attribute__((weak)) void uart_idle_callback(uint8_t idx, uint16_t len)
     (void)idx; (void)len;
 }
 
-/* 向量表入口 (startup_gd32f10x_hd.S 中的 weak 符号) —— 转发到公共分发器 */
-void USART0_IRQHandler(void) { gd32_uart_irq_handler(0); }
-void USART1_IRQHandler(void) { gd32_uart_irq_handler(1); }
-void USART2_IRQHandler(void) { gd32_uart_irq_handler(2); }
-void UART3_IRQHandler(void)  { gd32_uart_irq_handler(3); }
-void UART4_IRQHandler(void)  { gd32_uart_irq_handler(4); }
+/* 向量表入口 (startup_gd32f10x_hd.S 中的 weak 符号) —— 转发到公共分发器。
+ * gd32_uart_irq_handler 参数是设备树实例下标, 而这里拿到的是硬件外设号:
+ * 按实例表里记录的 uart_idx 反查, 节点顺序与外设号不一致的板级 dts 也能正确分发。
+ * (设备树没配的外设不会开中断, 走不到这里; 查不到时读 USART 清标志防止挂死。) */
+static void gd32_uart_irq_dispatch(uint8_t hw_idx)
+{
+    for (uint8_t i = 0; i < DT_UARTS_COUNT; i++) {
+        if (dt_uarts[i].uart_idx == hw_idx) {
+            gd32_uart_irq_handler(i);
+            return;
+        }
+    }
+    (void)usart_data_receive(uart_periph_of(hw_idx));   /* 未配置: 空读清标志 */
+}
+void USART0_IRQHandler(void) { gd32_uart_irq_dispatch(0); }
+void USART1_IRQHandler(void) { gd32_uart_irq_dispatch(1); }
+void USART2_IRQHandler(void) { gd32_uart_irq_dispatch(2); }
+void UART3_IRQHandler(void)  { gd32_uart_irq_dispatch(3); }
+void UART4_IRQHandler(void)  { gd32_uart_irq_dispatch(4); }
 
 /* ---------------------------------------------------------------------- */
 /* printf 重定向 (newlib nano / GCC): 输出到设备树 console=1 的实例          */
@@ -490,7 +562,9 @@ static int uart_stdio_write(int fd, const char *buf, int len)
 
 void uart_send(uint8_t idx, const uint8_t *data, uint16_t len) { (void)idx; (void)data; (void)len; }
 void uart_putc(uint8_t ch) { (void)ch; }
+void uart_printf(uint8_t idx, const char *fmt, ...) { (void)idx; (void)fmt; }
 int16_t uart_read(uint8_t idx) { (void)idx; return -1; }
+int uart_poll_read(uint8_t idx) { (void)idx; return -1; }
 uint16_t uart_available(uint8_t idx) { (void)idx; return 0; }
 uint16_t uart_readline(uint8_t idx, uint8_t *buf, uint16_t size) { (void)idx; (void)buf; (void)size; return 0; }
 uint16_t uart_idle_frame(uint8_t idx) { (void)idx; return 0; }

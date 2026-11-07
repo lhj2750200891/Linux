@@ -216,13 +216,20 @@ def check_count(node, prop_name, declared, actual):
                        % (node.path(), prop_name, declared, actual))
 
 
-def emit_instances(out, macro_base, specs, levels):
+def emit_instances(out, macro_base, specs, levels, extras=None):
+    """生成 DT_<base>_COUNT / _INSTANCES 宏。
+
+    extras: 可选的每实例扩展字段 (如按键 trigger), 追加 .trigger = n。
+    """
     out.append('#define DT_%s_COUNT %d' % (macro_base, len(specs)))
     if not specs:
         return    # 容器为空(或节点缺失)时只输出 COUNT 0, 驱动按 0 个实例走空实现
     out.append('#define DT_%s_INSTANCES \\' % macro_base)
     for idx, (port, pin, mode) in enumerate(specs):
-        line = '\t{ .port = %u, .pin = %u, .mode = 0x%02X, .level = %u }' % (port, pin, mode, levels[idx])
+        line = '\t{ .port = %u, .pin = %u, .mode = 0x%02X, .level = %u' % (port, pin, mode, levels[idx])
+        if extras is not None and idx < len(extras):
+            line += ', .trigger = %u' % extras[idx]
+        line += ' }'
         if idx != len(specs) - 1:
             line += ', \\'
         out.append(line)
@@ -422,14 +429,46 @@ def generate(root, src_note):
             base = sanitize(node.name)
             present.add(base)
             count = prop_u32(node, 'count')    # 个数由设备树描述
-            specs, levels, idents = [], [], []
+            # 工作方式: 0=EXTI 中断(默认, KEY_MODE_IRQ)  1=轮询(KEY_MODE_POLL)
+            key_mode = prop_u32(node, 'key-mode', 0)
+            if key_mode not in (0, 1):
+                raise FdtError('节点 %s: key-mode 应为 KEY_MODE_IRQ(0)/KEY_MODE_POLL(1), dt-bindings/input/gd32f10x-key.h'
+                               % node.path())
+            # 轮询消抖时间 ms (仅轮询模式使用, 默认 20)
+            debounce = prop_u32(node, 'debounce-ms', 20)
+            specs, levels, idents, triggers = [], [], [], []
             for child in node.children:
                 spec = parse_gpio_specs(child, 'gpios', root, phandles)[0]
                 specs.append(spec)
-                levels.append(prop_u32(child, 'active-level', 0))
+                # ---- 有效电平 active-level: 显式配置优先, 缺省按上下拉推导 ----
+                #   IPU 上拉(0x4x) -> 按下接地 -> 低有效(0)
+                #   IPD 下拉(0x2x) -> 按下接高 -> 高有效(1)
+                #   浮空/模拟输入 -> 无法推导, 默认低有效(0)
+                if 'active-level' in child.props:
+                    lvl = prop_u32(child, 'active-level', 0)
+                    if lvl not in (0, 1):
+                        raise FdtError('节点 %s: active-level 应为 0(低有效)/1(高有效)'
+                                       % child.path())
+                else:
+                    lvl = 1 if (spec[2] & 0x20) else 0
+                levels.append(lvl)
+                # ---- 中断触发类型 trigger: 显式配置优先, 缺省按有效电平推导 ----
+                #   低有效 -> 按下产生下降沿 KEY_TRIG_FALLING(1)
+                #   高有效 -> 按下产生上升沿 KEY_TRIG_RISING(0)
+                # 轮询模式不使用 trigger (电平判定走 active-level, 高/低有效均可)
+                if 'trigger' in child.props:
+                    trig = prop_u32(child, 'trigger', 1)
+                else:
+                    trig = 1 if lvl == 0 else 0
+                if trig not in (0, 1, 2):
+                    raise FdtError('节点 %s: trigger 应为 KEY_TRIG_RISING(0)/KEY_TRIG_FALLING(1)/KEY_TRIG_BOTH(2)'
+                                   % child.path())
+                triggers.append(trig)
                 idents.append(child.name)
             check_count(node, 'count', count, len(specs))
-            emit_instances(out, base, specs, levels)
+            emit_instances(out, base, specs, levels, triggers)
+            out.append('#define DT_%s_MODE %d' % (base, key_mode))
+            out.append('#define DT_%s_DEBOUNCE_MS %d' % (base, debounce))
             for idx, ident in enumerate(idents):
                 macro = 'DT_%s_IDX' % sanitize(ident)
                 if macro in used_macros:

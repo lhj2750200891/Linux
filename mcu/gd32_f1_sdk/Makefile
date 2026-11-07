@@ -286,7 +286,7 @@ lunch:
 	else \
 		echo "board: $$sel_b"; \
 		i=0; cur=0; \
-		cur_app=$$(cat $(APP_FILE) 2>/dev/null); \
+		cur_app=; [ -f $(APP_FILE) ] && cur_app=$$(cat $(APP_FILE)); \
 		for a in $$apps; do \
 			i=$$((i+1)); \
 			if [ "$$a" = "$$cur_app" ]; then \
