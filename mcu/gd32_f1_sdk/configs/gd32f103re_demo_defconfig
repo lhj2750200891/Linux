@@ -2,7 +2,7 @@
 # 同一颗芯片、不同的板卡: 指定自己的设备树, 硬件裁剪也不同(无矩阵键盘, 消抖 30ms)
 # 板卡之间的差异 = defconfig + 它指定的设备树, 驱动代码完全共用
 CONFIG_CHIP_GD32F103RE=y
-CONFIG_BOARD_DTS=boards/gd32f103re_demo/gd32f103re_demo.dts
+CONFIG_BOARD_DTS=arm/boards/gd32f103re_demo/gd32f103re_demo.dts
 CONFIG_DRIVER_SYSTICK=y
 CONFIG_DRIVER_GPIO_GD32=y
 CONFIG_DRIVER_LED=y

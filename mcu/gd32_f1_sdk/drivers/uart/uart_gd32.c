@@ -27,7 +27,7 @@
 #include "gd32f10x_gpio.h"
 
 /* dt-bindings 编码 (数据位/停止位/校验/中断模式), 设备树与驱动共用同一份定义 */
-#include "../../dts/include/dt-bindings/serial/gd32f10x-uart.h"
+#include "dt-bindings/serial/gd32f10x-uart.h"
 
 #if DT_UARTS_COUNT > 0
 

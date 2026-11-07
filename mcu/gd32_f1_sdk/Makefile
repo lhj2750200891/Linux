@@ -1,41 +1,44 @@
-# GD32F10x Makefile (Kconfig + compile-time devicetree)
+# GD32F10x Makefile (Kconfig + compile-time devicetree + multi-board/multi-app)
 #
 # Targets:
-#   make lunch [BOARD=<name>]   select board (interactive or direct)
-#   make                        build firmware -> build/bin/$(BOARD).bin
-#   make defconfig              restore default config from configs/$(BOARD)_defconfig
-#   make clean                  remove build/
-#   make distclean              remove build/ + .config + .board
-#   make download               flash firmware via OpenOCD + J-Link
+#   make lunch [BOARD=<name> [APP=<name>]]   两级选择: 版型 -> 应用 (交互或直接指定)
+#   make                                     build -> build/bin/$(BOARD)_$(APP).bin
+#   make defconfig                           按当前 版型+应用 恢复默认配置
+#   make clean / distclean / download
+#
+# 目录约定:
+#   版型(板卡): configs/<板型>_defconfig + arm/boards/<板型>/<板型>.dts
+#   应用:      application/<板型>/<应用>/ (Makefile 必需, defconfig 可选覆盖板级)
 
 ROOT_DIR    = .
-TARGET      = $(BOARD)
+TARGET      = $(BOARD)_$(APP)
 
-BOARD_FILE   = .board
-CONFIG_FILE  = .config
-DEFCONFIG    = configs/$(BOARD)_defconfig
+BOARD_FILE  = .board
+APP_FILE    = .app
+CONFIG_FILE = .config
 
-AVAILABLE_BOARDS = $(foreach b,$(sort $(notdir $(patsubst %/,%,$(dir $(wildcard $(ROOT_DIR)/boards/*/))))),$(if $(wildcard $(ROOT_DIR)/configs/$(b)_defconfig),$(b)))
-CURRENT_BOARD := $(shell cat $(BOARD_FILE) 2>/dev/null)
+AVAILABLE_BOARDS = $(patsubst %_defconfig,%,$(notdir $(wildcard $(ROOT_DIR)/configs/*_defconfig)))
 
 BOARD_ON_CMD := $(if $(filter command%,$(origin BOARD)),$(BOARD),)
+APP_ON_CMD   := $(if $(filter command%,$(origin APP)),$(APP),)
 
 ifeq ($(filter lunch clean distclean,$(MAKECMDGOALS)),)
+
+# ---------------- 版型解析 ----------------
+CURRENT_BOARD := $(shell cat $(BOARD_FILE) 2>/dev/null)
 
 ifneq ($(BOARD_ON_CMD),)
 ifneq ($(CURRENT_BOARD),)
 ifneq ($(CURRENT_BOARD),$(BOARD_ON_CMD))
 $(error BOARD=$(BOARD_ON_CMD) conflicts with current board '$(CURRENT_BOARD)', switch via: make lunch BOARD=$(BOARD_ON_CMD))
 endif
-else
-CURRENT_BOARD := $(BOARD_ON_CMD)
-$(shell echo $(BOARD_ON_CMD) > $(BOARD_FILE))
 endif
 BOARD := $(BOARD_ON_CMD)
+$(shell echo $(BOARD_ON_CMD) > $(BOARD_FILE))
 else
 BOARD := $(CURRENT_BOARD)
 ifeq ($(BOARD),)
-# auto-select if only one board exists
+# 只有一个版型时自动选择
 ifeq ($(words $(AVAILABLE_BOARDS)),1)
 BOARD := $(word 1,$(AVAILABLE_BOARDS))
 $(shell echo $(BOARD) > $(BOARD_FILE))
@@ -47,15 +50,57 @@ ifeq ($(BOARD),)
 $(error no board selected: run 'make lunch' first)
 endif
 
-# first build: fall back to defconfig
-ifeq ($(wildcard $(CONFIG_FILE)),)
-ifeq ($(wildcard $(DEFCONFIG)),)
-$(error defconfig not found: $(DEFCONFIG), check BOARD=$(BOARD))
-endif
-$(shell cp $(DEFCONFIG) $(CONFIG_FILE))
+ifeq ($(wildcard $(ROOT_DIR)/configs/$(BOARD)_defconfig),)
+$(error defconfig not found: configs/$(BOARD)_defconfig, check BOARD=$(BOARD))
 endif
 
-endif   # board resolution (skipped for lunch/clean/distclean)
+# ---------------- 应用解析 ----------------
+CURRENT_APP := $(shell cat $(APP_FILE) 2>/dev/null)
+
+ifeq ($(wildcard $(ROOT_DIR)/application),)
+$(error application/ directory not found)
+endif
+# 该版型下的可用应用 (application/<板型>/<应用>/Makefile)
+BOARD_APPS := $(shell for d in $(ROOT_DIR)/application/$(BOARD)/*/; do [ -f "$$d/Makefile" ] && basename $$d; done)
+
+ifneq ($(APP_ON_CMD),)
+ifneq ($(CURRENT_APP),)
+ifneq ($(CURRENT_APP),$(APP_ON_CMD))
+$(error APP=$(APP_ON_CMD) conflicts with current app '$(CURRENT_APP)', switch via: make lunch APP=$(APP_ON_CMD))
+endif
+endif
+APP := $(APP_ON_CMD)
+$(shell echo $(APP_ON_CMD) > $(APP_FILE))
+else
+APP := $(CURRENT_APP)
+ifeq ($(APP),)
+# 只有一个应用时自动选择
+ifeq ($(words $(BOARD_APPS)),1)
+APP := $(word 1,$(BOARD_APPS))
+$(shell echo $(APP) > $(APP_FILE))
+endif
+endif
+endif
+
+ifeq ($(APP),)
+$(error no app selected for board '$(BOARD)': run 'make lunch' first)
+endif
+
+ifeq ($(filter $(APP),$(BOARD_APPS)),)
+$(error app '$(APP)' not found under application/$(BOARD)/ (has Makefile?), available: $(BOARD_APPS))
+endif
+
+# ---------------- 配置文件 ----------------
+# 应用自带 defconfig 时优先于板级默认 (整个 .config 以它为准)
+APP_DEFCONFIG    = application/$(BOARD)/$(APP)/defconfig
+BOARD_DEFCONFIG  = configs/$(BOARD)_defconfig
+SELECT_DEFCONFIG = $(if $(wildcard $(ROOT_DIR)/$(APP_DEFCONFIG)),$(APP_DEFCONFIG),$(BOARD_DEFCONFIG))
+
+ifeq ($(wildcard $(CONFIG_FILE)),)
+$(shell cp $(ROOT_DIR)/$(SELECT_DEFCONFIG) $(CONFIG_FILE))
+endif
+
+endif   # 版型/应用解析 (lunch/clean/distclean 时跳过)
 
 -include $(CONFIG_FILE)
 
@@ -64,7 +109,10 @@ DT_FILE = $(strip $(CONFIG_BOARD_DTS))
 
 ifeq ($(filter lunch clean distclean,$(MAKECMDGOALS)),)
 ifeq ($(DT_FILE),)
-$(error CONFIG_BOARD_DTS not set in configs/$(BOARD)_defconfig)
+$(error CONFIG_BOARD_DTS not set in $(SELECT_DEFCONFIG))
+endif
+ifeq ($(wildcard $(ROOT_DIR)/$(DT_FILE)),)
+$(error devicetree not found: $(DT_FILE))
 endif
 endif
 
@@ -94,8 +142,9 @@ SIZE        = $(COMPILER)size
 CPP         = cpp
 PYTHON      ?= python3
 
-# per-driver Makefiles: drivers/<name>/Makefile appends to obj-$(CONFIG_xxx)
-# (Linux-style sub-Makefiles; adding a driver requires no top-level edit)
+# ---------------- 源文件收集 (Linux 风格子 Makefile) ----------------
+# 驱动: drivers/<name>/Makefile 全部 include -> obj-$(CONFIG_xxx) += ...
+# 应用: application/<板型>/<应用>/Makefile 只 include 当前选中的 -> obj-y += ...
 obj-y :=
 define add-drivers
 drv-dir := $(patsubst ./%,%,$(1))
@@ -103,7 +152,14 @@ include $(2)
 endef
 $(foreach mf,$(wildcard $(ROOT_DIR)/drivers/*/Makefile),$(eval $(call add-drivers,$(patsubst %/,%,$(dir $(mf))),$(mf))))
 drv-dir :=
-DRIVER_SOURCES  = $(addprefix $(ROOT_DIR)/,$(obj-y))
+
+ifeq ($(filter lunch clean distclean,$(MAKECMDGOALS)),)
+app-dir := application/$(BOARD)/$(APP)
+include $(ROOT_DIR)/$(app-dir)/Makefile
+app-dir :=
+endif
+
+DEV_APP_SOURCES = $(addprefix $(ROOT_DIR)/,$(obj-y))
 DRIVER_INCLUDES = $(foreach d,$(wildcard $(ROOT_DIR)/drivers/*/),-I$(d))
 
 MCU_FLAGS   = -mcpu=$(MCU_CPU) -mthumb -mfloat-abi=soft
@@ -130,17 +186,18 @@ LDFLAGS    += -Wl,--defsym=RAM_START=$(RAM_START)
 INCLUDES    = -I$(ROOT_DIR)/vendor/cmsis/core \
               -I$(ROOT_DIR)/vendor/cmsis/device \
               -I$(ROOT_DIR)/vendor/fwlib/include \
-              -I$(ROOT_DIR)/user \
+              -I$(ROOT_DIR)/arm/include \
+              -I$(ROOT_DIR)/application/$(BOARD)/$(APP) \
               $(DRIVER_INCLUDES)
 
+# 设备树 include 路径: 板级 dts 所在目录 + SoC dtsi(arm/core) + dt-bindings(arm/include)
 DTS_INCLUDES = -I$(dir $(DT_FILE)) \
-               -I$(ROOT_DIR)/dts \
-               -I$(ROOT_DIR)/dts/include
+               -I$(ROOT_DIR)/arm/core \
+               -I$(ROOT_DIR)/arm/include
 
 C_SOURCES   = $(wildcard $(ROOT_DIR)/vendor/cmsis/device/*.c) \
               $(wildcard $(ROOT_DIR)/vendor/fwlib/source/*.c) \
-              $(wildcard $(ROOT_DIR)/user/*.c) \
-              $(DRIVER_SOURCES)
+              $(DEV_APP_SOURCES)
 
 ASM_SOURCES   = $(wildcard $(ROOT_DIR)/vendor/cmsis/device/*.S)
 
@@ -154,13 +211,13 @@ all: $(BIN_DIR)/$(TARGET).bin $(BIN_DIR)/$(TARGET).hex | show-board
 
 .PHONY: show-board
 show-board:
-	@echo "Board: $(BOARD)    DeviceTree: $(DT_FILE)"
+	@echo "Board: $(BOARD)    App: $(APP)    DeviceTree: $(DT_FILE)"
 
 $(AUTOCONF): $(CONFIG_FILE) $(wildcard Kconfig drivers/Kconfig) scripts/kconfigconf.py
 	@mkdir -p $(@D)
 	$(PYTHON) scripts/kconfigconf.py --kconfig Kconfig --config $(CONFIG_FILE) --autoconf $@
 
-$(DTB): $(DT_FILE) $(BOARD_FILE) $(wildcard dts/*.dtsi) $(wildcard dts/include/dt-bindings/**/*.h)
+$(DTB): $(DT_FILE) $(BOARD_FILE) $(APP_FILE) $(wildcard arm/core/*.dtsi) $(wildcard arm/include/dt-bindings/**/*.h)
 	@mkdir -p $(@D)
 	$(CPP) -E -x assembler-with-cpp -nostdinc -undef $(DTS_INCLUDES) -o $(DTS_PP) $<
 	dtc -I dts -O dtb -o $@ $(DTS_PP)
@@ -189,56 +246,84 @@ $(OBJ_DIR)/%.o: $(ROOT_DIR)/%.S
 	@mkdir -p $(@D)
 	$(AS) -c $(ASFLAGS) $(INCLUDES) -o $@ $<
 
+# 两级 lunch: 1) 版型  2) 该版型下的应用
+# 直接指定: make lunch BOARD=gd32f103re APP=uart_echo (带 APP 则全程免交互)
 lunch:
-	@i=0; cur=0; \
+	@set -e; \
+	# ---------- 1. 选版型 ----------; \
 	if [ -n "$(BOARD_ON_CMD)" ]; then \
-		sel="$(BOARD_ON_CMD)"; \
+		sel_b="$(BOARD_ON_CMD)"; \
 	else \
 		echo "current board: $(if $(CURRENT_BOARD),$(CURRENT_BOARD),<none>)"; \
+		i=0; cur=0; \
 		for b in $(AVAILABLE_BOARDS); do \
 			i=$$((i+1)); \
 			if [ "$$b" = "$(CURRENT_BOARD)" ]; then \
-				cur=$$i; \
-				echo "   * $$i. $$b   <- current"; \
+				cur=$$i; echo "   * $$i. $$b   <- current"; \
 			else \
 				echo "     $$i. $$b"; \
 			fi; \
 		done; \
-		if [ "$$i" -eq 0 ]; then \
-			exit 1; \
-		fi; \
-		def=$${cur:-1}; \
+		[ "$$i" -eq 0 ] && { echo "error: no boards (configs/*_defconfig)"; exit 1; }; \
+		def=$${cur:-1}; [ "$$def" = "0" ] && def=1; \
 		printf "select board [1-%d] (default %s): " "$$i" "$$def"; \
 		read n; \
 		[ -z "$$n" ] && n=$$def; \
 		case "$$n" in *[!0-9]*|'') echo "error: '$$n' is not a number"; exit 1;; esac; \
-		if [ "$$n" -lt 1 ] || [ "$$n" -gt "$$i" ]; then \
-			echo "error: index $$n out of range (1~$$i)"; \
-			exit 1; \
-		fi; \
-		sel=`echo "$(AVAILABLE_BOARDS)" | cut -d' ' -f "$$n"`; \
+		[ "$$n" -lt 1 ] || [ "$$n" -gt "$$i" ] && { echo "error: index $$n out of range (1~$$i)"; exit 1; }; \
+		sel_b=`echo "$(AVAILABLE_BOARDS)" | cut -d' ' -f "$$n"`; \
 	fi; \
-	valid=0; \
-	for b in $(AVAILABLE_BOARDS); do \
-		if [ "$$b" = "$$sel" ] && [ -f "$(ROOT_DIR)/configs/$${sel}_defconfig" ]; then valid=1; break; fi; \
+	[ -f "$(ROOT_DIR)/configs/$${sel_b}_defconfig" ] || { echo "error: board '$$sel_b' not found"; exit 1; }; \
+	echo "$$sel_b" > $(BOARD_FILE); \
+	# ---------- 2. 选应用 (该版型下) ----------; \
+	apps=""; \
+	for d in $(ROOT_DIR)/application/$$sel_b/*/; do \
+		[ -f "$$d/Makefile" ] && apps="$$apps$$(basename $$d) "; \
 	done; \
-	if [ "$$valid" != "1" ]; then \
-		echo "error: board '$$sel' not found"; \
-		exit 1; \
+	[ -z "$$apps" ] && { echo "error: no apps under application/$$sel_b/ (need Makefile)"; exit 1; }; \
+	if [ -n "$(APP_ON_CMD)" ]; then \
+		sel_a="$(APP_ON_CMD)"; \
+	else \
+		echo "board: $$sel_b"; \
+		i=0; cur=0; \
+		cur_app=$$(cat $(APP_FILE) 2>/dev/null); \
+		for a in $$apps; do \
+			i=$$((i+1)); \
+			if [ "$$a" = "$$cur_app" ]; then \
+				cur=$$i; echo "   * $$i. $$a   <- current"; \
+			else \
+				echo "     $$i. $$a"; \
+			fi; \
+		done; \
+		def=$${cur:-1}; [ "$$def" = "0" ] && def=1; \
+		printf "select app [1-%d] (default %s): " "$$i" "$$def"; \
+		read n; \
+		[ -z "$$n" ] && n=$$def; \
+		case "$$n" in *[!0-9]*|'') echo "error: '$$n' is not a number"; exit 1;; esac; \
+		[ "$$n" -lt 1 ] || [ "$$n" -gt "$$i" ] && { echo "error: index $$n out of range (1~$$i)"; exit 1; }; \
+		sel_a=`echo "$$apps" | cut -d' ' -f "$$n"`; \
+		sel_a=$$(echo $$sel_a); \
 	fi; \
-	dts=`sed -n 's/^CONFIG_BOARD_DTS=//p' "$(ROOT_DIR)/configs/$${sel}_defconfig" | head -1`; \
-	if [ ! -f "$$dts" ]; then \
-		echo "error: devicetree not found: $$dts"; \
-		exit 1; \
+	echo "$$apps" | grep -qw "$$sel_a" || { echo "error: app '$$sel_a' not found under application/$$sel_b/"; exit 1; }; \
+	echo "$$sel_a" > $(APP_FILE); \
+	# ---------- 3. 应用配置 (应用自带 defconfig 优先) ----------; \
+	if [ -f "$(ROOT_DIR)/application/$$sel_b/$$sel_a/defconfig" ]; then \
+		src="application/$$sel_b/$$sel_a/defconfig"; \
+	else \
+		src="configs/$${sel_b}_defconfig"; \
 	fi; \
-	echo "$$sel" > $(BOARD_FILE); \
-	cp "$(ROOT_DIR)/configs/$${sel}_defconfig" $(CONFIG_FILE); \
-	echo "board: $$sel"; \
+	dts=`sed -n 's/^CONFIG_BOARD_DTS=//p' "$(ROOT_DIR)/$$src" | head -1`; \
+	[ -n "$$dts" ] || { echo "error: CONFIG_BOARD_DTS not set in $$src"; exit 1; }; \
+	[ -f "$(ROOT_DIR)/$$dts" ] || { echo "error: devicetree not found: $$dts"; exit 1; }; \
+	cp "$(ROOT_DIR)/$$src" $(CONFIG_FILE); \
+	echo "board: $$sel_b"; \
+	echo "app:   $$sel_a"; \
+	echo "config: $$src"; \
 	echo "devicetree: $$dts"
 
 defconfig:
-	@cp $(DEFCONFIG) $(CONFIG_FILE)
-	@echo "restored $(DEFCONFIG) -> $(CONFIG_FILE)"
+	@cp $(ROOT_DIR)/$(SELECT_DEFCONFIG) $(CONFIG_FILE)
+	@echo "restored $(SELECT_DEFCONFIG) -> $(CONFIG_FILE)"
 
 -include $(DEP_FILES)
 
@@ -246,7 +331,7 @@ clean:
 	rm -rf $(BUILD_DIR)
 
 distclean: clean
-	rm -f $(CONFIG_FILE) $(BOARD_FILE)
+	rm -f $(CONFIG_FILE) $(BOARD_FILE) $(APP_FILE)
 
 download: $(BIN_DIR)/$(TARGET).bin
 	@openocd \

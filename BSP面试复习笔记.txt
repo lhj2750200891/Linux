@@ -1,0 +1,806 @@
+================================================================================
+                    BSP 岗位面试复习笔记 (基础版)
+                    平台: RK3588 (ARM64) + K3/Spacemit (RISC-V)
+                    依据: 本人 arm64/RK3588 与 riscv/K3 两套适配笔记整理
+================================================================================
+
+目录
+--------------------------------------------------------------------------------
+ 1. BSP 岗位是干什么的
+ 2. Linux 设备树 (DTS) 基础 —— 面试必考
+ 3. 设备树到驱动的完整链路 (设备怎么被驱动认出来的)
+ 4. 嵌入式 Linux 启动流程
+ 5. 常见外设模块 (按面试频率排序)
+    5.1 GPIO (LED / 按键)
+    5.2 UART / RS232 / RS485
+    5.3 I2C / SPI
+    5.4 看门狗
+    5.5 RTC
+    5.6 千兆网口 (GMAC / RGMII / PHY)
+    5.7 USB 2.0 / 3.0
+    5.8 PCIe
+    5.9 SD 卡 / eMMC / SDIO
+    5.10 CAN
+    5.11 WiFi / BT
+    5.12 电源管理 (regulator / PMIC)
+    5.13 显示与摄像头 (了解即可)
+ 6. RK3588 与 K3 两平台对比 (特色考点)
+ 7. 两平台的 SDK 与编译体系
+ 8. 板级调试常用命令清单
+ 9. 引脚复用与资源冲突 (BSP 日常核心工作)
+10. 高频面试题速答 (背熟这段)
+
+================================================================================
+1. BSP 岗位是干什么的
+================================================================================
+
+BSP = Board Support Package（板级支持包）。
+
+一句话: 让一块新板子上的 Linux 系统能正常使用所有硬件。
+具体工作:
+  - 移植 U-Boot / 内核 / 设备树到自研板
+  - 根据原理图配置各外设的设备树节点 (引脚、电源、时钟)
+  - 补内核配置 (CONFIG_xxx)，移植厂商私有驱动
+  - 烧录、调试、验证各外设 (网口/USB/显示/摄像头...)
+  - 解决引脚冲突、电源时序、稳定性问题
+
+核心技能: 会看原理图 + 会写设备树 + 会查内核驱动源码 + 会板端验证。
+
+--------------------------------------------------------------------------------
+日常套路 (三段式, 我的每份模块笔记都是这个结构):
+  ① 硬件连接: 芯片接在哪组引脚 (查原理图)
+  ② 设备树配置: 写 dts 节点 (status/pinctrl/属性)
+  ③ 验证测试: 板端命令验证 (dmesg/ls/echo...)
+
+================================================================================
+2. Linux 设备树 (DTS) 基础 —— 面试必考
+================================================================================
+
+2.1 为什么需要设备树
+--------------------------------------------------------------------------------
+Linux 内核 3.x 起硬件描述从代码中剥离出来，放进设备树 (Device Tree)，
+做到"一份内核代码，多块板子都能跑"。板级差异全部由 dts 描述。
+
+文件体系:
+  .dts      板级文件 (一块板一个)
+  .dtsi     SoC 公共部分 (类似 C 的头文件, 被 include)
+  编译: dtc 工具把 .dts 编成 .dtb (二进制), 内核启动时解析成 device_node 树
+
+RK3588:  SoC 全部控制器在 rk3588s.dtsi 定义, 板级 dts 只做"使能+添加"
+K3:      对应物是 k3.dtsi, 另有 k3-pinctrl.dtsi / k3_opp_table.dtsi 等
+
+2.2 节点基本结构
+--------------------------------------------------------------------------------
+    &uart0 {                          // &xxx = 引用 SoC dtsi 里已有节点, 追加内容
+        status = "okay";              // 打开该控制器 (disabled=关)
+        pinctrl-names = "default";
+        pinctrl-0 = <&uart0m2_xfer>;  // 引脚复用组
+    };
+
+    led: leds@0 {                     // label: 节点名@寄存器地址
+        compatible = "gpio-leds";     // ★ 驱动匹配的字符串 (最重要)
+        reg = <0x51>;                 // 总线地址 (I2C 从机地址 / SPI 片选号)
+        interrupts = <0 10 4>;        // 中断
+        status = "okay";
+    };
+
+2.3 必考属性含义
+--------------------------------------------------------------------------------
+  compatible       兼容字符串, 内核靠它与驱动的 of_match_table 比对。
+                   可以写多个值, 内核逐个比对, 哪个先命中用哪个。
+                   (实例: ES8388 声卡写 compatible = "everest,es8388",
+                    "everest,es8323", 驱动只认 es8323, 靠第二个值命中)
+  status           "okay" 开 / "disabled" 关 (SoC dtsi 里默认大量 disabled)
+  reg              设备地址: I2C 下是 7 位从机地址 (如 RTC hym8563 = 0x51),
+                   SPI 下是片选号
+  interrupts       中断描述
+  pinctrl-0        引脚复用, 指向 pinctrl dtsi 里定义的引脚组
+  *-supply         电源引用, 如 vmmc-supply = <&vcc3v3_sd_s0>
+  gpios / xxx-gpios  GPIO 引用, 如 reset-gpios = <&gpio1 RK_PA1 GPIO_ACTIVE_LOW>
+  clocks/clock-names  时钟引用 + 名字 (驱动按名字取, 不是按顺序)
+
+2.4 DTS 里的 GPIO 写法 (Rockchip)
+--------------------------------------------------------------------------------
+    gpios = <&gpio1 RK_PB3 GPIO_ACTIVE_HIGH>;
+              │      │       │        └─ 极性 (高有效/低有效)
+              │      │       └── 引脚编号 (Bank 里的 bit)
+              │      └── 引脚 (B3 = Bank B 第 3 脚)
+              └── GPIO 控制器 1 (RK3588 有 GPIO0~GPIO4 共 5 个 bank)
+
+  K3 平台对应写法: <&pca9555 PCA_IO0_3 GPIO_ACTIVE_HIGH> 或 SoC 引脚直接给
+  全局编号 (K3_GPIO 宏)。
+
+  规律: 引脚名如 GPIO1_D5 = bank1 的 D 组第 5 脚; 复用功能有多个档
+  (func1~func15), 同一脚只能同时做一个功能 —— 这就是引脚冲突的来源。
+
+2.5 pinctrl (引脚复用) —— BSP 工作中最常打交道的东西
+--------------------------------------------------------------------------------
+  RK3588: 同一控制器多组引脚, 命名 m0/m1/m2, 按板子走线选一组:
+     uart0m2: RX=GPIO4_A4 TX=GPIO4_A3   (m2 这组)
+     can0m0 / can0m1...                  (选错组 = canX 不出现)
+
+  定义在 rk3588s-pinctrl.dtsi, 形如:
+     rockchip,pins = <1 RK_PB3 RK_FUNC_GPIO &pcfg_pull_none>;
+                                                  └── 电气配置 (上下拉/驱动强度)
+
+  K3 对应物: k3-pinctrl.dtsi, 用 K3_PADCONF 宏, pad 全局编号 + func 号。
+  K3 特点: GPIO 全局编号与 pad 空间是分开的两套编号体系, 别搞混。
+
+  pinctrl 还能多个状态: pinctrl-names = "default", "rts_gpio";
+  (BT 场景: 正常时 RTS 脚归 UART 用, 特殊时刻切 GPIO 态拉电平)
+
+2.6 面试常问: dtb 怎么被内核使用?
+--------------------------------------------------------------------------------
+  dts 源码 → dtc 编译 → dtb → U-Boot 加载并 fixup(可改) → 传给内核 →
+  内核 unflatten 成 device_node 树 → 驱动 probe 时按属性名取资源。
+
+  常用排查: 板上实际跑的 dtb 是不是刚编的?
+     strings /sys/firmware/fdt | grep 关键字
+     dtc -I dtb -O dts /sys/firmware/fdt    (反编译对照)
+
+================================================================================
+3. 设备树到驱动的完整链路 (设备怎么被驱动认出来的)
+================================================================================
+
+3.1 主链 (记住这张图, 面试画出来加分)
+--------------------------------------------------------------------------------
+    .dts → dtb → 内核 unflatten → device_node 树
+                                          │
+              ┌───────────────────────────┤
+              ▼                           ▼
+    有 compatible 的节点            挂在总线控制器下的子设备
+    → 内核统一建成                  (I2C/SPI 设备)
+      platform_device               → 总线驱动 probe 成功后,
+                                     扫描子节点再创建设备
+              │                           │
+              └────── 驱动注册, compatible 逐个字符串比对 ──────┘
+                                 │ 命中
+                                 ▼
+                            probe(dev)  ← 按"属性名"取资源
+                                 ▼
+                        子系统注册 → 用户态可见 (/dev/xxx, /sys/...)
+
+3.2 三个关键认知 (面试表达用)
+--------------------------------------------------------------------------------
+① 设备创建分两派:
+   - 有 compatible 的节点 (LED、声卡、串口控制器...) → populate 建
+     platform_device
+   - I2C/SPI 子设备 (I2C 的 RTC/codec、SPI 的 PMIC...) → 必须先等
+     总线控制器驱动 probe 成功, 由 i2c/spi core 扫子节点来建。
+     所以 "I2C 设备完全没动静、也不报错" → 先查总线控制器起没起!
+
+② 匹配就是字符串逐个比对:
+   compatible 的每个值与驱动 of_match_table 比对。
+   差一个字符绑的就是另一个驱动 (cw2017/cw2015 是两个驱动;
+   es8388 板子写两个值靠 es8323 命中)。
+
+③ probe 按名字取资源:
+   devm_clk_get(dev, "xvclk") 找的是 clock-names = "xvclk";
+   名字对不上 → -ENOENT 或 -EPROBE_DEFER。
+
+3.3 MFD 概念 (PMIC 常见)
+--------------------------------------------------------------------------------
+RK806 PMIC 一个节点, 驱动 probe 成功后拆出多个子设备
+(pinctrl / pwrkey / regulator), 这叫 MFD (Multi-Function Device)。
+"regulator 子节点没有 compatible 也能工作" —— 因为设备是 MFD
+父驱动造的, 不是 populate 建的。
+父设备 probe 失败 → 子设备全部消失 → 21 路电源全没, 系统跑不起来。
+排 PMIC 问题永远先看父设备。
+
+3.4 probe 常见错误码 (背下来)
+--------------------------------------------------------------------------------
+  -517  -EPROBE_DEFER  等 supply/时钟/pinctrl 供应商 (最常见)
+  -2    -ENOENT       资源名字对不上 (clock-names/xxx-gpios 拼错)
+  -22   -EINVAL       必填属性缺失或值域错
+  -19   -ENODEV       硬件 ID 不符 / 不支持
+  -16   -EBUSY        地址或中断被占
+  -110  -ETIMEDOUT    芯片没应答 (没上电 / I2C 没接上拉 / 地址错)
+
+  查挂起的设备: cat /sys/kernel/debug/devices_deferred
+
+3.5 USB 设备特例: 不在设备树里
+--------------------------------------------------------------------------------
+4G 模组等 USB 设备, 插上才存在。设备树只负责控制器/PHY/VBUS 供电;
+驱动匹配靠 USB VID/PID 硬表 (如 quectel EC25 = 0x2c7c:0x0125)。
+排查第一步先分清: "lsusb 里根本没有" = DT 侧问题 (vbus/phy);
+"枚举到了没驱动" = VID/PID 不在驱动表里。
+
+================================================================================
+4. 嵌入式 Linux 启动流程
+================================================================================
+
+4.1 RK3588 (ARM64) 启动链
+--------------------------------------------------------------------------------
+  上电 → BootROM → TPL/SPL (DDR 初始化, rkbin 闭源 blob) →
+  miniloader → U-Boot (2025.04) → (bl32/TEE 安全固件) →
+  加载 boot 分区 (Image+dtb+initrd) → 内核 → rootfs
+
+  rkbin: Rockchip 闭源固件仓库 (DDR init bin / miniloader / bl32)。
+
+4.2 K3 (RISC-V) 启动链
+--------------------------------------------------------------------------------
+  上电 → BootROM → U-Boot SPL (2022.10, 兼任 FSBL, 内含 DDR init) →
+  OpenSBI (RISC-V M 模式固件, 类似 ARM 的 ATF/TEE 层) + ESOS
+  (RCPU 管理核代理) → U-Boot proper → bootfs 分区 (Image+dtb+initrd)
+  → 内核 → rootfs
+
+  K3 特色: U-Boot 按 EEPROM TLV 里的 product_name 自动选 dtb。
+  RISC-V 与 ARM 固件层差别: ARM 用 ATF/rkbin, RISC-V 用 OpenSBI。
+
+4.3 面试问"内核启动后设备树何时生效"
+--------------------------------------------------------------------------------
+内核 early_init 阶段 unflatten device tree → 驱动按它 probe。
+用户态可在 /sys/firmware/devicetree/base/ (即 /proc/device-tree/) 看到。
+
+4.4 上电时序谁在调压 (电源相关, 回答有层次加分)
+--------------------------------------------------------------------------------
+  上电瞬间       PMIC 芯片内部硬件 POR 时序 (dts 管不了)
+  U-Boot TPL     DDR init 固件直接 I2C 写 PMIC 调 DDR 电压
+  U-Boot proper  解析 regulator-init-microvolt, 预调大核电压
+  内核 probe     regulator 框架接管, boot-on/always-on 决定状态
+  运行时         cpufreq/devfreq 按 OPP 表调频调压 (温控介入则 IPA 限频)
+
+================================================================================
+5. 常见外设模块
+================================================================================
+
+--------------------------------------------------------------------------------
+5.1 GPIO (LED / 按键) —— 最简单, 面试热身题
+--------------------------------------------------------------------------------
+
+[LED] compatible = "gpio-leds", CONFIG_LEDS_GPIO
+    每个 LED 是 leds 节点下的一个子节点 (label/gpios/default-state)。
+    LED 的 GPIO 也可以挂在 I2C GPIO 扩展芯片 (PCA9555) 上 —— gpiod 框架
+    把 SoC GPIO 和扩展器 GPIO 统一抽象, 驱动无感。
+    验证: echo 1 > /sys/class/leds/xxx/brightness
+
+[GPIO 按键] compatible = "gpio-key", CONFIG_KEYBOARD_GPIO
+    linux,code = <KEY_F12>; 加 debounce-interval。
+    验证: evtest 看按键事件。
+
+[ADC 按键] compatible = "adc-keys", CONFIG_KEYBOARD_ADC
+    原理: 多个按键不同分压电阻 → SARADC 读电压值区分按键。
+    io-channels = <&saradc 1>; press-threshold-microvolt 阈值判定。
+    RK3588 的 Recovery 键就是 ADC 按键 (SARADC 通道1)。
+
+[电源键] 挂在 PMIC 上: RK806 的 pwrkey 子节点,
+    CONFIG_INPUT_RK805_PWRKEY, 短按上报 KEY_POWER。
+    长按 6~8s 芯片硬件强制下电 (与软件无关 —— 硬件保护)。
+
+Linux GPIO 子系统三问:
+  - 老接口: sysfs /sys/class/gpio (导出后读写 value) —— 已废弃但面试常问
+  - 新接口: libgpiod (gpioset/gpioget 命令, 内核里是 descriptor-based)
+  - 设备树里 GPIO 带极性 (GPIO_ACTIVE_HIGH/LOW), 驱动统一按"逻辑有效"处理
+
+--------------------------------------------------------------------------------
+5.2 UART / RS232 / RS485
+--------------------------------------------------------------------------------
+
+[本质] RS232 = 普通 UART + MAX3232 电平转换芯片 (TTL → ±12V)
+      RS485 = 普通 UART + MAX3485 类收发器 → 差分 A/B 总线
+      设备树层面就是配普通 UART, 差异在电平转换电路。
+
+[UART 配置] RK3588 有 uart0~uart9 十路。普通串口两步:
+    status = "okay" + 选 pinctrl 复用组 (m0/m1/m2)。
+    驱动: CONFIG_SERIAL_8250 + SERIAL_8250_DW (Designware 8250)。
+    K3 同理, 串口驱动 8250 通用, k3_defconfig 已编好。
+
+[调试串口] RK3588 用 UART2 + fiq-debugger:
+    - fiq-debugger 独占 uart2 (直接操作硬件, 不走 8250 驱动)
+    - 波特率 1500000 (只支持 115200 / 1500000 两档!)
+    - 不要同时使能 &uart2 和 fiq-debugger, 会冲突
+    - 面试冷知识: 为什么叫 fiq? ARM 的 Fast Interrupt, 优先级最高,
+      系统卡死时也能进调试 —— 这就是用它的原因。
+
+[RS485 方向控制三种方案] (面试高频)
+    ① 硬件自动换向收发器: 设备树零额外配置 (Firefly 板全用这种)
+    ② GPIO 显式控制: rs485-de-gpios + linux,rs485-enabled-at-boot-time
+    ③ UART RTS 脚控制方向
+    排查: RS485 只能发不能收 → 方向脚极性错 (rs485-rts-active-low
+    加/删对比); 乱码 → 波特率不符或 A/B 接反。
+
+[验证] 短接 TX-RX 自发自收:
+    stty -F /dev/ttyS0 115200 raw -echo
+    cat /dev/ttyS0 & ; echo test > /dev/ttyS0
+
+--------------------------------------------------------------------------------
+5.3 I2C / SPI
+--------------------------------------------------------------------------------
+
+[I2C 基础] 两线制 (SCL/SDA), 半双工, 7 位从机地址, 需上拉电阻。
+    速率: 标准 100K / 快速 400K / 高速 3.4M。
+    设备树: 控制器节点下挂子设备, reg = 从机地址。
+    例: hym8563 RTC 挂 i2c2, reg = <0x51>。
+
+[I2C 子设备创建] 由 i2c 控制器驱动 probe 成功后扫描子节点创建
+    (i2c-core-of.c: of_i2c_register_devices)。适配器没起, 子设备不存在。
+
+[验证工具]
+    i2cdetect -y 2        扫总线看有哪些地址应答 (UU=在用)
+    i2cdump / i2cget / i2cset   读写寄存器 (调试 sensor/codec 神器)
+
+[SPI 基础] 四线 (CLK/MOSI/MISO/CS), 全双工, 一主多从 (片选区分)。
+    设备树: reg = 片选号, spi-max-frequency 限速。
+    例: RK806 PMIC 挂 spi2, spi-max-frequency = 1000000 (只能 1MHz,
+    写高直接通信异常 —— 时序极限, 私有属性别乱改)。
+
+[SPI 外挂设备实例] MCP2518FD (SPI 转 CAN-FD):
+    - compatible = "microchip,mcp2518fd" (与 MCP2517 同一驱动 mcp251xfd)
+    - 晶振用 fixed-clock 节点描述, 驱动拿它算位时序 —— 晶振频率填错
+      则位时序全错
+    - INT 引脚低有效, interrupt-parent/中断类型要对
+
+--------------------------------------------------------------------------------
+5.4 看门狗 (watchdog)
+--------------------------------------------------------------------------------
+
+[作用] 程序跑飞/内核卡死时, 无人喂狗 → 硬件自动复位系统。
+
+[SoC 内置狗]
+    RK3588: DW (Designware) watchdog, &wdt { status="okay"; } 即可。
+            CONFIG_DW_WATCHDOG。
+    K3:     "spacemit-k1,wdt"。坑: 基座自带 spa,wdt-disabled 属性,
+            有它 = 驱动在但狗不启动; **删掉这一行才是开机狗**,
+            不是改 status! (面试好素材: 厂商私有属性要看驱动源码语义)
+
+[用法] 标准 /dev/watchdog 接口:
+    打开设备开始计数; 读写一次 = 喂狗; 写 'V' 关闭。
+    生产环境用 systemd RuntimeWatchdogSec=30 托管喂狗。
+
+[外置 I2C 看门狗 PC9202] (两平台同款芯片)
+    - 厂商 SDK 无驱动需自己移植 (复制 .c + Kconfig + Makefile 三处)
+    - 私有字符设备 /dev/wdt_base, 不是标准 watchdog 框架
+    - driver-names 属性必填 (决定设备名), 缺失 probe 直接失败
+    - 定位: SoC 彻底挂死 (时钟都崩) 时由外部芯片断电重启, 冗余等级更高
+    - 外置狗复位脚必须串进主板电源电路, 否则形同虚设 (硬件评审项)
+
+--------------------------------------------------------------------------------
+5.5 RTC
+--------------------------------------------------------------------------------
+
+[作用] 掉电计时 (纽扣电池维持), 提供系统时间 + 闹钟唤醒。
+
+[常见芯片] hym8563 / pcf8563 (I2C 接口, 两平台笔记里都有)
+    RK3588 SG 板: hym8563 挂 i2c2, reg = <0x51>, INT 脚接 GPIO0_B0。
+
+[关键属性]
+    #clock-cells = <0> + clock-frequency = <32768>:
+    RTC 同时作为 32.768K 时钟源输出, 给 WiFi/BT 模块供时钟
+    (bluetooth-platdata 节点 clocks = <&hym8563> 引用它)。
+    wakeup-source: 支持休眠被闹钟唤醒。
+
+[验证]
+    hwclock -w 写入 / hwclock -r 读回, 重启后时间保持即 OK。
+    闹钟唤醒: echo +60 > /sys/class/rtc/rtc0/wakealarm; echo mem > /sys/power/state
+
+--------------------------------------------------------------------------------
+5.6 千兆网口 (GMAC / RGMII / PHY) —— 面试重点
+--------------------------------------------------------------------------------
+
+[架构] SoC 内置 MAC 控制器 + 外挂 PHY 芯片, RGMII 接口连接。
+    RK3588: gmac0/gmac1 两路, 外挂 RTL8211F PHY (MDC/MDIO 管理)。
+    驱动: CONFIG_STMMAC_ETH + CONFIG_REALTEK_PHY (内核自带)。
+    K3:    GMAC0~GMAC3, 外挂 YT8531 PHY, delayline 每板重调。
+
+[RGMII 时序 —— 最高频考点]
+    RGMII 规范要求 TX/RX 方向各约 2ns 延迟 (时钟与数据偏移采样)。
+    - phy-mode = "rgmii-rxid": RX 延迟由 PHY 芯片内部提供 (硬件 strap
+      配好), SOC 端不再设 rx_delay
+    - TX 延迟由 SoC 侧 GRF 寄存器调整 → 设备树 tx_delay = <0x37>,
+      范围 0x00~0x7F 每档约 150ps, 与 PCB 走线相关, **每块板必须实测**!
+
+[故障特征] (背下来)
+    link up 但 ping 不通 / 吞吐只有 300~600Mbps 且波动大 → tx_delay 不准,
+    以 0x10 步进微调。iperf3 双向打流, 千兆口应稳定 930~950Mbps。
+    偶发 CRC 错 / 断流 → 信号质量问题, pinctrl 增强引脚驱动强度
+    (pcfg_pull_up_drv_level_6)。
+    PHY 枚举不到 (dmesg 无 rtl8211f) → 查 reg 地址 / 复位引脚极性 /
+    复位延时 (rtl8211f 需给足 100ms)。
+
+[验证] ethtool eth0 (速率/双工/link) + iperf3 + ping -s 1472 -f 大包测稳。
+
+--------------------------------------------------------------------------------
+5.7 USB 2.0 / 3.0
+--------------------------------------------------------------------------------
+
+[USB2.0] RK3588: usb_host0/1_ehci + ohci 成对 (高速+全速兜底, 都要使能),
+    PHY 是 SoC 内置 u2phy2/u2phy3 (无需引脚配置)。
+    VBUS 5V 一般 GPIO 控制 (regulator-fixed + phy-supply)。
+    CONFIG_USB_EHCI_HCD / OHCI_HCD / PHY_ROCKCHIP_INNO_USB2。
+
+[USB3.0] 走 DWC3 控制器 (usbhost3_0 + usbhost_dwc3_0, dr_mode="host"),
+    USB3 差分对接 combphy2_psu, USB2 D+/D- 伴生 u2phy3 —— **两组 PHY
+    同时要配**, 漏 combphy 就只有 480M。
+    CONFIG_USB_XHCI_HCD + USB_DWC3 + combphy 驱动。
+
+[经典冲突] (两平台都考)
+    - combphy2_psu: USB3.0 / SATA2 / pcie2x1l1 三者互斥, 二选一!
+    - u2phy3: USB2 口 2 与 USB3 口共用 (一个 USB3 口自带 USB2 伴生)
+    - usbdp_phy0/1: Type-C 与独立 DP 口共享
+
+[验证/判读]
+    lsusb -t: 5000M=USB3.0, 480M=USB2.0, 12M=全速
+    只有 480M → combphy 没使能; 枚举失败 → VBUS 供电/极性;
+    大硬盘掉电 → VBUS 供不动 (USB3 要约 900mA, 加外部供电)。
+    dd 测速: USB3 U盘 150~350MB/s, USB2 卡在 ~40MB/s。
+
+--------------------------------------------------------------------------------
+5.8 PCIe
+--------------------------------------------------------------------------------
+
+[RK3588 控制器]
+    pcie3x4 (x4 聚合) / pcie3x2 / pcie2x1l0/l1/l2 三路 Gen2 x1。
+    PCIe3.0 的 4 lane 是**共享 PHY (pcie30phy)**, 用 phymode 决定拆分:
+      PHY_MODE_PCIE_AGGREGATION  x4 全给一个口 (接 NVMe SSD)
+      PHY_MODE_PCIE_NANBBI       P1:x2 + P0:x1*2 拆成多个口
+      ... (5 种模式, 记 "4 lane 共享, phymode 拆分" 即可)
+
+[设备树三要素]
+    ① reset-gpios (PERST# 复位脚 + 极性)
+    ② vpcie3v3-supply (插槽 3.3V 电源, regulator-fixed + GPIO 门控)
+    ③ PHY 节点 status + phymode
+
+[WiFi 场景特有] rockchip,skip-scan-in-resume: 休眠唤醒后跳过重扫描,
+    避免 WiFi 断连; **接 SSD 等存储设备就不要加**。
+
+[PHY 互斥] combphy0_ps 与 SATA0 互斥; combphy1_ps 与 USB3 OTG1 互斥。
+    (SATA3/USB3/PCIe2 共用 SerDes PHY 是行业通病, RK3588 如此,
+     K3 也一样: FF_SATA_SSD 与 FF_PCIEX16_SLOT 同一差分对二选一)
+
+[验证] lspci 看枚举; lspci -vvv 看 LnkSta (Speed 8GT/s + Width x4 =
+    PCIe3.0 x4 正常); link 只到 2.5GT/s → PHY mode 与 num-lanes 不匹配。
+
+--------------------------------------------------------------------------------
+5.9 SD 卡 / eMMC / SDIO
+--------------------------------------------------------------------------------
+
+[RK3588 三个独立控制器, 不要混淆!]
+    sdmmc (fe2c0000, dw_mci)  → TF 卡
+    sdio  (fe2d0000, dw_mci)  → SDIO WiFi (AIC8800 等)
+    sdhci (fe2e0000, dwcmshc) → eMMC 专用
+
+[TF 卡关键属性]
+    bus-width = <4>; sd-uhs-sdr104 (高速模式, 需 vccio 能切 1.8V);
+    vqmmc-supply (信号电平电源) / vmmc-supply (卡电源)。
+    SDR104 必须把可调的 vccio (PMIC 的 PLDO5) 挂到 vqmmc 上才会自动切压。
+
+[eMMC]
+    BGA 焊死, non-removable, 8bit, HS400 / Enhanced Strobe 模式。
+    分区: Rockchip 方案 eMMC 头部有 param 分区表 (uboot/trust/boot...),
+    首次烧写用 SDK 分区表, 直接 fdisk 会破坏 loader 分区。
+    boot0/boot1/rpmb 分区出现 = eMMC 正常。
+
+[SDIO WiFi 与 TF 卡的属性差异] (焊接式 SDIO 设备语义)
+    no-sd (不扫 TF 卡) / cap-sdio-irq / non-removable /
+    keep-power-in-suspend (休眠保持供电) / mmc-pwrseq (WL_REG_ON 上电时序)。
+
+[冷知识] mmcblk0/mmcblk1 谁是 eMMC 谁是 TF 由 probe 顺序决定,
+    以 dmesg 为准, 脚本别写死设备号。
+
+--------------------------------------------------------------------------------
+5.10 CAN
+--------------------------------------------------------------------------------
+
+[RK3588] 内置 3 路 CAN-FD 控制器 (can0/1/2, rockchip,can-2.0,
+    驱动 rockchip_canfd.c), CAN 收发器 (TJA1051) 外接。
+    配置: status + pinctrl 组 + assigned-clock-rates 200MHz。
+    引脚不多时用 SPI 外挂 MCP2518FD (见 5.3)。
+
+[K3] 内置 flexcan0~4 共 5 路 (Flexcan 上游驱动), 同样支持 FD。
+
+[CAN 基础常识]
+    - 差分总线 CAN_H/CAN_L, 两端各一个 120Ω 终端电阻
+    - 经典 CAN 常用 500kbps; CAN-FD 仲裁段 1M + 数据段 5M
+    - bus-off: 波形/速率不匹配导致, down 再 up 恢复
+
+[验证命令]
+    ip link set can0 type can bitrate 500000 (loopback on 可不接总线自测)
+    ip link set can0 up
+    cansend can0 123#DEADBEEF   发
+    candump can0                 收
+    双机不通 → 查共地 / 终端电阻 / 两端波特率一致
+
+--------------------------------------------------------------------------------
+5.11 WiFi / BT
+--------------------------------------------------------------------------------
+
+[总体架构] SoC 都不含无线, 全部外接。三种总线组合:
+    ① PCIe WiFi + UART BT     (AP6275P)
+    ② PCIe WiFi + USB BT      (RTL8852BE ★组合卡: WiFi 走 PCIe 10ec:b852,
+       BT 走 USB 0bda:b852, 两路接口都要接, 少一路少一半功能)
+    ③ SDIO WiFi + UART BT     (AIC8800)
+
+[RK 平台框架] rkwifibt (external/rkwifibt):
+    开机脚本 S36wifibt-init.sh → 按设备树 wifi_chip_type 查表
+    (wifibt-util.sh) 选驱动和固件。面试记住"驱动+固件+脚本查表"三层。
+
+[设备树三部分]
+    ① PCIe/SDIO 载体控制器 (pcie2x1l2 / sdio 节点)
+    ② UART 节点 (BT HCI 数据, 常带 CTS/RTS 流控, 如 uart9m2)
+    ③ wireless-wlan / wireless-bluetooth 两个纯软件节点
+       (compatible "wlan-platdata" / "bluetooth-platdata", 存放
+        WL_REG_ON/BT_REG_ON/wake 等 GPIO 和 32K 时钟引用)
+
+[BT 启动流程 (bcmdhd 系)]
+    BT_REG_ON 上电 → UART 发 HCI 命令 → brcm_patchram_plus1 下载 .hcd 固件
+    → 切 1.5M 波特率工作。
+    BT 走 USB 的 (RTL 系): 内核必须**关闭**自带 btusb, 否则与
+    rtk_btusb 冲突! (好陷阱题)
+
+[rfkill] 射频开关子系统, 控制无线上下电; CONFIG_RFKILL + RFKILL_GPIO。
+    "WiFi 起不来" 先 rfkill list 看有没有被 block。
+
+--------------------------------------------------------------------------------
+5.12 电源管理 (regulator / PMIC)
+--------------------------------------------------------------------------------
+
+[regulator 框架] 内核对电源轨的统一抽象。
+    设备树里每路电源是一个节点, 靠 vin-supply 串出**供电树**:
+    12V → vcc5v0_sys → PMIC 各路 → 各设备。
+
+[两类 regulator]
+    regulator-fixed: 纯软件记账, 无驱动控制 (板级硬 DCDC 的登记;
+      有 GPIO 使能脚时描述 gpio + enable-active-high)
+    PMIC 可调轨: 如 RK806 的 21 路输出 (10 DCDC + 6 PLDO + 5 NLDO)
+
+[RK3588 典型 PMIC 架构] (背个大概)
+    RK806 (SPI 接口, 1MHz) 管大部分轨 + 三颗 RK860x 大电流 DCDC
+    分管大核 CPU 和 NPU (4×A76 峰值 8A+, PMIC 单路 3~5A 顶不住)。
+    一个 SPI 节点 MFD 拆出 pinctrl/pwrkey/regulator 三个子设备。
+
+[关键属性]
+    regulator-always-on: 永不断 (核心轨)
+    regulator-boot-on:   开机就是开的状态
+    vin-supply:          上游电源 (串成树)
+    *_s0 / *_s3 轨名后缀: s0=运行态有电; s3=挂起仍保持 (RTC/唤醒源靠 s3)
+
+[验证] cat /sys/kernel/debug/regulator/regulator_summary
+    (能看到整棵供电树和每个消费者)
+
+[温控/降频一句话] (RK3588)
+    thermal zone 贴温度 trip; soc_thermal 75°C 启动 IPA (power allocator)
+    分配功率、85°C 是控制目标 (不是危险值!), 115°C critical 关机,
+    120°C 硬件 tshut 复位。"降频不是坏, 是设计内的控温手段"。
+
+--------------------------------------------------------------------------------
+5.13 显示与摄像头 (了解思路即可)
+--------------------------------------------------------------------------------
+
+显示链路 (以 RK3588): VOP2 (显控) → 接口控制器 (HDMI/DP/eDP/DSI) → PHY → 屏幕
+    - HDMI2.1 x2, MIPI-DSI x2, eDP, DP(Type-C AltMode)
+    - eDP 与 HDMI 共享 hdptxphy; DP 与 Type-C 共享 usbdp_phy
+    - DP↔eDP 同物理通路二选一; 老平台 VDP 用 DP + LT2404 桥接芯片
+摄像头链路: sensor (I2C 配置) → MIPI CSI-2 → DPHY → ISP
+    - 常见 sensor: IMX415 (compatible "sony,imx415")
+    - port/endpoint + remote-endpoint 两端**互指成对**构成 of_graph 数据流
+    - 大坑: remote-endpoint 缺一边/单向指 → 所有 probe 正常,
+      dmesg 干净, 就是没有帧! (of_graph 是数据流, 与驱动匹配无关)
+桥接芯片概念: SoC 没有原生接口时用转接 (LT9211D 转 LVDS,
+    LT2404 DP 转 HDMI, GL3321G USB 转 SATA), 软件上多一个桥驱动节点。
+
+================================================================================
+6. RK3588 与 K3 两平台对比 (特色考点)
+================================================================================
+
+             RK3588 (Rockchip)              K3 (Spacemit)
+架构         ARM64 (Cortex-A76×4+A55×4)     RISC-V 64 (含 RCPU 管理核)
+内核         6.12 Rockchip fork             6.18 上游+补丁
+U-Boot       2025.04                        2022.10 (SPL 兼任 FSBL)
+引导中间层   rkbin 闭源 blob                OpenSBI + ESOS (开源, M 模式固件)
+内核配置     defconfig + fragment 合并       k3_defconfig 单文件
+启动载荷     boot 分区 (boot.img)            bootfs 分区 (ext4: Image+DTB)
+选 dtb       固定                          U-Boot 按 EEPROM TLV 型号选
+构建         build.sh 子命令式               Buildroot 为中心 + 强制 docker
+工具链       SDK 自带 prebuilts (aarch64)    buildroot 生成 (riscv64-)
+显示器       原生 HDMI                      **无原生 HDMI** = DP+LT2404 桥
+存储         原生 SATA ×3                   **无原生 SATA** = PCIe 转 AHCI 桥
+CAN          3 路 CAN-FD                    5 路 Flexcan
+以太网        gmac0/1 + RTL8211F             gmac0~3 + YT8531
+
+面试一句话总结:
+  "两个平台 BSP 方法论完全一样 —— 看原理图、配设备树、补 CONFIG、
+   板端验证。差别在生态: RK 是 ARM+闭源 blob, K3 是 RISC-V+OpenSBI
+   全开源; K3 很多接口靠桥接芯片补 (HDMI/SATA), 且每块板要重调
+   以太网 delayline"。
+
+RISC-V 相关可能被追问的点:
+  - OpenSBI = RISC-V 的 M 态 (Machine mode) 固件, 相当于 ARM 的 ATF
+  - 启动模式 M/S/U 三态对应 ARM 的 EL3/EL1/EL0
+
+================================================================================
+7. 两平台的 SDK 与编译体系 (简历相关)
+================================================================================
+
+[RK3588 SDK 常用命令]
+    ./build.sh chip:rk3588        选芯片
+    ./build.sh kernel             只编内核 (出 Image/dtb)
+    ./build.sh kernel-config      menuconfig
+    ./build.sh uboot / firmware / updateimg   编 U-Boot / 打包 / 整烧镜像
+    编内核板级流: 改 dts + defconfig → build.sh kernel → firmware → updateimg
+
+[K3 SDK 常用]
+    make envconfig                选 target (生成 output/<t>/Makefile)
+    ./build.sh linux              只编 DTB 并在线更新 bootfs.img (最快!)
+    ./build.sh linux-rebuild      重编内核+DTB
+    make linux-menuconfig         内核配置
+    换 dtb 也可直接替换板上 bootfs 分区里的 dtb 文件, 不必整烧。
+
+[交叉编译概念]
+    x86 主机上用 aarch64-/riscv64- 前缀工具链编目标平台代码。
+    编内核: make ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu- ...
+
+[烧录]
+    RK:  rkflash.sh / RKDevTool (tools/ 目录), update.img 整烧
+    K3:  firefly-update.sh + bundle_update.sh
+
+================================================================================
+8. 板级调试常用命令清单 (面试前过一遍, 要能脱口而出)
+================================================================================
+
+系统/驱动:
+    dmesg | grep -i xxx               内核日志 (probe 成败第一入口)
+    ls /sys/bus/platform/devices/     设备有没有创建
+    ls -l /sys/bus/*/devices/*/       有没有 driver 链接 (匹配成功否)
+    cat /sys/kernel/debug/devices_deferred   被挂起等资源的设备
+    lsmod / zcat /proc/config.gz | grep CONFIG_XXX   驱动编没编
+
+设备树:
+    dtc -I dtb -O dts /sys/firmware/fdt   反编译板上实际 dtb
+    ls /proc/device-tree/            查看设备树节点
+
+资源三表 (probe 失败三查):
+    cat /sys/kernel/debug/pinctrl/*/pinmux-pins        引脚实际复用
+    cat /sys/kernel/debug/clk/clk_summary              时钟树
+    cat /sys/kernel/debug/regulator/regulator_summary  电源树
+
+模块验证:
+    LED:      echo 1 > /sys/class/leds/x/brightness
+    按键:     evtest
+    串口:     stty + cat + echo 回环
+    I2C:      i2cdetect / i2cget / i2cdump
+    网口:     ethtool / iperf3 / ping -s 1472 -f
+    USB:      lsusb / lsusb -t / lsblk / dd
+    PCIe:     lspci / lspci -vvv (LnkSta)
+    CAN:      ip link + cansend + candump
+    SD/eMMC:  dmesg | grep mmc / lsblk / hdparm -t
+    摄像头:   v4l2-ctl / media-ctl (了解)
+    显示:     modetest (了解)
+
+手动 bind/unbind 驱动 (隔离时序问题):
+    echo <dev> > /sys/bus/platform/drivers/<drv>/bind|unbind
+
+================================================================================
+9. 引脚复用与资源冲突 (BSP 日常核心工作)
+================================================================================
+
+[什么是引脚冲突] 同一物理引脚的多个复用功能 (func) 互斥,
+只能同时用一个。规划硬件引脚时就要对照复用表避开。
+
+[RK3588 典型冲突速记] (从我的笔记里挑最高频的)
+    combphy2_psu   : USB3.0 / SATA2 / PCIe2.0 x1 —— 三选一
+    uart5m0/can0m1 : 同引脚 (GPIO4_D4/D5) 二选一
+    uart5m1/can2m0 : 同引脚二选一
+    u2phy3         : USB2 口 2 / USB3 口伴生 二选一
+    usbdp_phy0/1   : Type-C / 独立 DP 口
+
+[K3 典型冲突]
+    dp0 / edp0     : 同一物理通路, 两个 dtsi 二选一
+    FF_HDMI0 / DSI0: 同一组 pad 硬件二选一
+    FF_SATA/x16槽  : 同一差分对 (ASW3810 开关) 二选一
+    pad 58~60      : pcie2 功能 / Type-C 引脚 互斥
+
+[方法论: 四条路径查"某引脚被谁用了"]
+    ① 硬件引脚反查: grep 引脚号 → pinctrl dtsi (rk3588-base-pinctrl.dtsi),
+       命中的功能组名即复用名, 同脚多组 = 冲突点
+    ② 设备树正查: grep 板级 dts 里的节点引用, 看外设接的哪控制器
+    ③ 配置反查: grep compatible → drivers/ 找驱动 → 看 CONFIG_ 符号
+    ④ 板端运行时: cat pinmux-pins 看引脚当前实际复用 (排除"配了没生效")
+
+[面试表达] "我做过引脚冲突速查表, 自研板选型时先跑一遍复用表,
+    PHY 共享 (USB3/SATA/PCIe 共用 SerDes) 和 pad 复用是两大冲突来源"。
+
+================================================================================
+10. 高频面试题速答 (背熟这段)
+================================================================================
+
+Q1: 设备树里 compatible 是干嘛的?
+A:  驱动匹配字符串。内核把节点的 compatible 值列表与每个驱动的
+    of_match_table 逐个比对, 命中即 probe。可以写多个值增加兼容性
+    (如 es8388 写两个, 靠第二个 es8323 命中)。
+
+Q2: I2C 设备树里 reg 是什么? SPI 里呢?
+A:  I2C 是 7 位从机地址 (如 0x51); SPI 是片选号。
+
+Q3: 设备树 status=okay 了, 为什么设备还是不出来?
+A:  ① dts 编了没烧对 (先反编译 /sys/firmware/fdt 确认)
+    ② I2C/SPI 子设备依赖总线控制器先 probe, 总线没起子设备就不存在
+    ③ compatible 拼错, 匹配是静默失败的
+    ④ 驱动没编进内核 (查 /proc/config.gz)
+    ⑤ probe 被 defer (查 devices_deferred)
+
+Q4: RGMII 网口 link up 但不通/慢, 怎么排查?
+A:  大概率 tx_delay 与走线不匹配。iperf3 双向打流定位方向,
+    tx_delay 以 0x10 步进微调; RX 方向检查 phy-mode 是否 rgmii-rxid
+    及 PHY 硬件 delay 配置; 偶发断流查 pinctrl 驱动强度。
+
+Q5: USB3 口只有 USB2 速度 (480M), 为什么?
+A:  combphy (USB3 PHY) 没使能, 只剩 u2phy 伴生在跑。查 combphy
+    是否被 SATA/PCIe 互斥占用。
+
+Q6: 看门狗怎么用?
+A:  打开 /dev/watchdog 开始计数, 定期写一个字节喂狗; 写 'V' 安全关闭。
+    生产用 systemd RuntimeWatchdogSec。外置 I2C 狗 (PC9202) 是
+    私有字符设备, 冗余等级更高, SoC 彻底挂死时也能断电重启。
+
+Q7: RS485 和 RS232 区别?
+A:  RS232 单端全双工点对点 (±12V); RS485 差分半双工总线 (A/B 两线,
+    120Ω 终端电阻), 距离远抗干扰强。软件上都是普通 UART + 电平转换
+    芯片, RS485 多一个收发方向 (DE/RE) 问题: 硬件自动换向 / GPIO
+    控制 (rs485-de-gpios) / RTS 控制 三种方案。
+
+Q8: CAN 总线不通怎么查?
+A:  先 loopback 自测驱动; 再双机对测: 查共地、两端 120Ω 终端电阻、
+    两端波特率一致; 用 ip -details -s 看 error 计数和 bus-off。
+
+Q9: probe 返回 -517 是什么?
+A:  -EPROBE_DEFER, 依赖的时钟/电源/GPIO 供应商还没就绪, 内核稍后
+    重试。如果"永远 defer", 说明供应商永远不会来 (引用了不存在的节点)。
+
+Q10: regulator-always-on 和 boot-on 区别?
+A:  always-on=永远不许关; boot-on=开机时刻是开的 (之后可被管理)。
+    核心供电轨用 always-on, 挂起要保持的轨看 _s3 语义。
+
+Q11: eMMC 和 TF 卡设备树差异?
+A:  eMMC: non-removable、8bit、HS400/Enhanced Strobe、专用 sdhci
+    控制器; TF: 有卡检测、4bit、SDR104 需 vccio 可切 1.8V。
+    mmcblk0/1 编号由 probe 顺序决定, 以 dmesg 为准。
+
+Q12: ARM (RK3588) 和 RISC-V (K3) BSP 工作差别?
+A:  方法论相同。差别: 启动固件 (ATF/rkbin blob vs OpenSBI 开源)、
+    工具链 (aarch64 vs riscv64)、K3 接口多用桥接芯片补 (HDMI/SATA)、
+    每板重调以太网 delayline。
+
+Q13: 什么是 pinctrl? m0/m1 是什么?
+A:  引脚复用子系统。同一控制器可以走不同引脚组, m0/m1/m2 是不同
+    复用档; 板级按走线选一组, 配错组设备出不来。同脚不同功能组
+    就是引脚冲突来源。
+
+Q14: USB 设备 (如 4G 模组) 在设备树里吗?
+A:  不在。USB 设备热插拔, 匹配靠 VID/PID; 设备树只描述控制器、
+    PHY 和 VBUS 供电。"lsusb 里没有"查 DT 侧, "有设备没驱动"查
+    VID/PID 表 —— 两种症状排查方向完全相反。
+
+Q15: 你平时怎么验证一个外设适配完成了?
+A:  三步: dmesg 确认 probe 成功 → 用户态接口出现 (/sys /dev) →
+    功能级测试 (LED echo / 网口 iperf3 / USB dd 测速 / CAN 回环)。
+    稳定性测试: 大包 ping / 长时间打流 / 反复插拔。
+
+================================================================================
+附: 我笔记里的真实排障案例 (面试讲项目时用)
+--------------------------------------------------------------------------------
+1. tx_delay 调试: GMAC link up 但吞吐掉到 300~600M, 以 0x10 步进微调
+   tx_delay, iperf3 双向验证至 930M+ 稳定。
+2. 声卡 probe 全绿但喇叭无声: 两层原因 —— 板级 spk-con-gpio 抄错引脚
+   (功放使能脚没拉高) + 用户态 wireplumber 把开关置 0。
+   教训: 声音问题按 内核probe → ALSA 路由 → 用户态 mixer 三层查。
+3. DP 无画面: of_graph connector 图缺一条 dp0 边, probe 全绿、
+   dmesg 干净但没图像 → 显示/摄像头第一动作: 核对 remote-endpoint
+   两端互指。
+4. BT 起不来: rts 脚 pinctrl 状态卡死 + 内核自带 btusb 与厂商
+   rtk_btusb 冲突 (RTL8852BE 必须关 CONFIG_BT_HCIBTUSB)。
+5. RTL8852BE 组合卡: WiFi PCIe + BT USB 两路接口缺一不可。
+6. K3 看门狗: "狗没启动"根因是基座 spa,wdt-disabled 属性存在,
+   删它才是开狗 (不是改 status) —— 厂商私有属性必须 grep 驱动源码
+   确认语义。
+7. RK806 PMIC (MFD) 失败连坐: 父设备 probe 失败 → pinctrl/pwrkey/
+   regulator 全部不出现 → 电源全没系统起不来。排 PMIC 先看父设备。
+8. USB3 硬盘掉电: VBUS 供不动 900mA, 硬件加外部供电。
+9. 温控贴 85°C 跑: IPA 电源分配器 75°C 就启动、85°C 是控制目标,
+   "贴着 85 跑是设计内常态", 降频是手段不是故障。
+
+================================================================================
+使用建议:
+  - 第 2/3/10 章必须熟 (设备树 + 驱动匹配链 + 速答) —— 面试出现率最高
+  - GMAC tx_delay / USB3 combphy / PCIe PHY 互斥 是能体现深度的三个点
+  - 讲项目时用"附"里的真实案例, 每个都是 现象 → 排查 → 根因 → 修复
+================================================================================

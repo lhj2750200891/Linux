@@ -373,7 +373,7 @@ def generate(root, src_note):
     out.append('/*')
     out.append(' * devicetree_generated.h —— 由 scripts/gen_devicetree.py 自动生成, 请勿手改')
     out.append(' * %s' % src_note)
-    out.append(' * 修改硬件请编辑 boards/ 下设备树(.dts), 重新编译即可。')
+    out.append(' * 修改硬件请编辑 arm/boards/ 下设备树(.dts), 重新编译即可。')
     out.append(' */')
     out.append('#ifndef BUILD_GENERATED_DEVICETREE_H')
     out.append('#define BUILD_GENERATED_DEVICETREE_H')

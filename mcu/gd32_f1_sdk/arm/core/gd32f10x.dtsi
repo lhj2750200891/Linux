@@ -1,0 +1,127 @@
+/*
+ * gd32f10x.dtsi —— GD32F10x 家族级设备树 (公共部分)
+ *
+ * 所有 GD32F10x 型号共有的 SoC 外设: SysTick / GPIO 控制器 / USART/DMA 外设节点。
+ * 型号级差异(UART 引脚分组等)在 arm/core/gd32f103xx.dtsi 中增补,
+ * 板级 .dts include 型号级 dtsi, 不直接 include 本文件。
+ */
+
+#include <dt-bindings/gpio/gd32f10x-gpio.h>
+#include <dt-bindings/serial/gd32f10x-uart.h>
+
+/ {
+	#address-cells = <1>;
+	#size-cells = <1>;
+
+	soc: soc {
+		compatible = "gd,gd32f103";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* Cortex-M3 内核 SysTick: clock-frequency 描述 CPU 时钟(延时基准),
+		 * 与 vendor 的 __SYSTEM_CLOCK_108M_PLL 一致; 板卡换主频时在板级 dts 覆写 */
+		systick: systick@e000e010 {
+			compatible = "gd,cortex-m-systick";
+			reg = <0xe000e010 0x10>;
+			clock-frequency = <108000000>;
+		};
+
+		gpioa: gpio@40010800 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40010800 0x400>;
+			port-idx = <0>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpiob: gpio@40010c00 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40010C00 0x400>;
+			port-idx = <1>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpioc: gpio@40011000 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40011000 0x400>;
+			port-idx = <2>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpiod: gpio@40011400 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40011400 0x400>;
+			port-idx = <3>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		gpioe: gpio@40011800 {
+			compatible = "gd,gd32-gpio";
+			reg = <0x40011800 0x400>;
+			port-idx = <4>;
+			#gpio-cells = <2>;
+			gpio-controller;
+		};
+
+		/* ------------------------------------------------------------------
+		 * USART/UART 外设节点
+		 *
+		 * reg        : 外设基址 (USART0=0x40013800(APB2), 其余在 APB1)
+		 * uart-idx   : 驱动内索引用序号 (0=USART0 ... 4=UART4)
+		 * #pin-group-cells = <1> : 板级引用格式 <&uartx 组号>
+		 *
+		 * 引脚分组: 见各型号级 dtsi (arm/core/gd32f103xx.dtsi) 的
+		 * pin-group 节点; 也可在板级 dts 用 tx-gpios/rx-gpios 手动组合
+		 * (数据手册 2.6 节中标了 USARTx_TX/RX 复用功能的引脚均可)。
+		 * ------------------------------------------------------------------ */
+		usart0: uart@40013800 {
+			compatible = "gd,gd32-uart-periph";
+			reg = <0x40013800 0x400>;
+			uart-idx = <0>;
+			#pin-group-cells = <1>;
+		};
+
+		usart1: uart@40004400 {
+			compatible = "gd,gd32-uart-periph";
+			reg = <0x40004400 0x400>;
+			uart-idx = <1>;
+			#pin-group-cells = <1>;
+		};
+
+		usart2: uart@40004800 {
+			compatible = "gd,gd32-uart-periph";
+			reg = <0x40004800 0x400>;
+			uart-idx = <2>;
+			#pin-group-cells = <1>;
+		};
+
+		uart3: uart@40004c00 {
+			compatible = "gd,gd32-uart-periph";
+			reg = <0x40004C00 0x400>;
+			uart-idx = <3>;
+			#pin-group-cells = <1>;
+		};
+
+		uart4: uart@40005000 {
+			compatible = "gd,gd32-uart-periph";
+			reg = <0x40005000 0x400>;
+			uart-idx = <4>;
+			#pin-group-cells = <1>;
+		};
+
+		dma0: dma@40020000 {
+			compatible = "gd,gd32-dma";
+			reg = <0x40020000 0x400>;
+			dma-idx = <0>;
+		};
+
+		dma1: dma@40020400 {
+			compatible = "gd,gd32-dma";
+			reg = <0x40020400 0x400>;
+			dma-idx = <1>;
+		};
+	};
+};

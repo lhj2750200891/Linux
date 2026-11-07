@@ -72,8 +72,10 @@
 	uarts {
 		compatible = "gd,gd32-uart";
 		status = "okay";
-		count = <3>;
+		count = <1>;
 
+		/* 调试串口: USART0, PA9/PA10 预定义组(m0), 115200 8N1
+		 * DMA 收 + IDLE 空闲中断判帧, printf 重定向到本实例 */
 		uart1 {
 			pgroup = <&usart0 0>;
 			baud-rate = <115200>;
@@ -87,21 +89,29 @@
 			console = <1>;
 		};
 
-		uart2 {
-			pgroup = <&usart1 0>;
-		 	baud-rate = <9600>;
-		 	dma-mode = <0>;
-		 	int-mode = <GD32_UART_INT_RX_IDLE>;
-		 	rx-buf-size = <64>;
-		};
-		 
-		uart3 {
-		 	tx-gpios = <&gpioc 10 GD32_MODE_AF_PP>;
-		 	rx-gpios = <&gpioc 11 GD32_MODE_IN_FLOATING>;
-		 	uart-idx = <2>;
-		 	remap = <1>;
-		 	dma-mode = <0>;
-		 	int-mode = <GD32_UART_INT_NONE>;
-		};
+		/* 示例2 (按需打开, count 同步 +1): 中断模式 —— USART1 PA2/PA3,
+		 * RBNE(每字节)+IDLE(帧结束) 双中断, 数据自动入环形缓冲区:
+		 * uart2 {
+		 *	pgroup = <&usart1 0>;
+		 *	baud-rate = <9600>;
+		 *	dma-mode = <0>;
+		 *	int-mode = <GD32_UART_INT_RX_IDLE>;
+		 *	rx-buf-size = <64>;
+		 * };
+		 *
+		 * 示例3 (按需打开): 纯轮询 + 手动组合引脚 —— USART2 用 PC10/PC11
+		 * (部分重映射组, 此时 remap=<1> 打开 AFIO 重映射):
+		 * uart3 {
+		 *	tx-gpios = <&gpioc 10 GD32_MODE_AF_PP>;
+		 *	rx-gpios = <&gpioc 11 GD32_MODE_IN_FLOATING>;
+		 *	uart-idx = <2>;
+		 *	remap = <1>;
+		 *	dma-mode = <0>;
+		 *	int-mode = <GD32_UART_INT_NONE>;
+		 * };
+		 *
+		 * 手动组合引脚说明: 数据手册 2.6 节中任一标了 USARTx_TX/RX 复用
+		 * (Alternate 或 Remap) 的引脚都可写进 tx-gpios/rx-gpios; 跨组混搭
+		 * (如默认组 TX 配重映射组 RX) 需要整组重映射, 单引脚不支持。*/
 	};
 };

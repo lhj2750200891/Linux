@@ -1,7 +1,7 @@
 # gd32f103re 板级默认配置 (make lunch BOARD=gd32f103re 选择本板)
 # defconfig = 板卡的身份: 指定设备树 + 芯片 + 驱动裁剪
 CONFIG_CHIP_GD32F103RE=y
-CONFIG_BOARD_DTS=boards/gd32f103re/gd32f103re.dts
+CONFIG_BOARD_DTS=arm/boards/gd32f103re/gd32f103re.dts
 CONFIG_DRIVER_SYSTICK=y
 CONFIG_DRIVER_GPIO_GD32=y
 CONFIG_DRIVER_LED=y
