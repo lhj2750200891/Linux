@@ -161,7 +161,7 @@ application/<版型>/<新应用>/
 ├── Makefile     # 必需: obj-y += $(app-dir)/main.c   ($(app-dir) 顶层自动注入,
 │                #   多文件就多写几行 obj-y += $(app-dir)/xxx.c)
 ├── main.c       # 应用入口
-├── main.h
+├── main.h       # 必需: vendor 的 gd32f10x_it.c 会 include 它(编译硬依赖)
 └── defconfig    # 可选: 整体覆盖板级默认配置(如只开 UART 关掉 LED/按键)
 ```
 

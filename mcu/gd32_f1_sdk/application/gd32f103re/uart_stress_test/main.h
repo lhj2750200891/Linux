@@ -1,6 +1,6 @@
 /**
  * @file  main.h
- * @brief blink 应用公共头
+ * @brief uart_stress_test 应用公共头
  */
 #ifndef APP_MAIN_H
 #define APP_MAIN_H
