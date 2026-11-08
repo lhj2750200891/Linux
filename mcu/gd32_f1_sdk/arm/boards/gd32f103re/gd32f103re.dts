@@ -55,6 +55,83 @@
 		};
 	};
 
+	basic-timers {
+		compatible = "gd,gd32-basic-timer";
+		status = "okay";
+		count = <2>;
+
+		btim1 {
+			timer-idx = <5>;
+			clock-hz = <108000000>;
+			prescaler = <10800>;
+			period-us = <500000>;
+			irq-mode = <1>;
+		};
+
+		btim2 {
+			timer-idx = <6>;
+			clock-hz = <108000000>;
+			prescaler = <10800>;
+			period-us = <1000000>;
+			irq-mode = <1>;
+		};
+	};
+
+	/* 通用定时器 TIMER1~4: 四种模式 (mode) 详见 dt-bindings/timer/gd32f10x-timer.h
+	 * 验证组合: TIMER2 PWM 输出 PB0 (CH2, 1kHz) --跳线--> TIMER3 双通道捕获 PB8
+	 * (CH2 上升沿直连 + CH3 交叉下降沿, 共用 PB8 引脚; PB9 配了但不生效);
+	 * TIMER1 做 1s 时基定时中断 (无引脚) */
+	general-timers {
+		compatible = "gd,gd32-general-timer";
+		status = "okay";
+		count = <3>;
+
+		/* TIMER1: 1s 定时中断 (时基), prescaler=10800 -> 10kHz, 10000 tick */
+		gtim1 {
+			timer-idx = <1>;
+			mode = <GD32_TIMER_MODE_TIMEBASE>;
+			clock-hz = <108000000>;
+			prescaler = <10800>;
+			period-us = <1000000>;
+			irq-mode = <1>;
+		};
+
+		/* TIMER2: PWM 输出, 1kHz/50%, CH2 -> PB0 (TIMER2 默认引脚组 CH2=PB0) */
+		gtim2 {
+			timer-idx = <2>;
+			mode = <GD32_TIMER_MODE_PWM>;
+			clock-hz = <108000000>;
+			prescaler = <108>;          /* 1MHz, 1tick=1us */
+			period-us = <1000>;          /* 1kHz */
+			irq-mode = <0>;              /* pwm 不需要中断 */
+			ch2 {
+				channel = <2>;
+				gpios = <&gpiob 0 GD32_MODE_AF_PP>;
+				duty-tenk = <5000>;   /* 50% */
+			};
+		};
+
+		/* TIMER3: 双通道测频+占空比, CH2/CH3 共用 PB8 引脚
+		 * (CH2 直连上升沿, CH3 交叉下降沿)。
+		 * prescaler=108 -> 1MHz 计数 (1tick=1us): 1kHz 周期=1000 tick,
+		 * 16 位可测 15.3Hz~1MHz, 占空比分辨率 0.1% */
+		gtim3 {
+			timer-idx = <3>;
+			mode = <GD32_TIMER_MODE_PWMCAP>;
+			clock-hz = <108000000>;
+			prescaler = <108>;           /* 1MHz 计数 */
+			irq-mode = <0>;              /* 捕获差值在驱动 ISR 内计算, 应用轮询读结果 */
+			ch2 {
+				channel = <2>;
+				gpios = <&gpiob 8 GD32_MODE_IPU>;
+			};
+			ch3 {
+				channel = <3>;
+				gpios = <&gpiob 9 GD32_MODE_IPU>;   /* pwmcap 高号通道引脚被忽略 */
+			};
+		};
+	};
+
 	matrix-keys {
 		compatible = "gd,gpio-matrix-keys";
 		status = "okay";
@@ -76,9 +153,6 @@
 		status = "okay";
 		count = <3>;
 
-		/* 调试串口: USART0, PA9/PA10 预定义组(m0), 115200 8N1
-		 * DMA 收 + IDLE 空闲中断判帧, printf 重定向到本实例 (console=1)。
-		 * 应用里 printf(...) 即走本口; 其他口用 uart_printf(DT_UARTx_IDX, ...) */
 		uart1 {
 			pgroup = <&usart0 0>;
 			baud-rate = <115200>;
@@ -119,13 +193,5 @@
 			rx-buf-size = <128>;
 			console = <0>;
 		};
-
-		/* 手动组合引脚备用说明 (按需换掉某实例的 pgroup):
-		 * 数据手册 2.6 节中任一标了 USARTx_TX/RX 复用 (Alternate 或 Remap)
-		 * 的引脚都可写进 tx-gpios/rx-gpios, 如 USART2 改用 PC10/PC11:
-		 *   tx-gpios = <&gpioc 10 GD32_MODE_AF_PP>;
-		 *   rx-gpios = <&gpioc 11 GD32_MODE_IN_FLOATING>;
-		 *   uart-idx = <2>; remap = <1>;
-		 * 跨组混搭 (默认组 TX + 重映射组 RX) 需要整组重映射, 单引脚不支持。*/
 	};
 };

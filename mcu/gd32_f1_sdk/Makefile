@@ -102,6 +102,18 @@ endif
 
 endif   # 版型/应用解析 (lunch/clean/distclean 时跳过)
 
+# .config 存在但比 Kconfig 旧 (新增符号/修改默认) 时, 解析期先重新生成补全,
+# 保证本条 make 就能拿到完整 CONFIG_* 变量 —— 否则 obj-$(CONFIG_xxx) 展开为空,
+# 对应驱动被静默漏编, 到链接才 undefined reference (btimer/gtimer 踩过的坑)
+ifeq ($(filter lunch clean distclean,$(MAKECMDGOALS)),)
+ifeq ($(wildcard $(CONFIG_FILE)),)
+$(shell cp $(ROOT_DIR)/$(SELECT_DEFCONFIG) $(CONFIG_FILE))
+$(shell $(PYTHON) scripts/kconfigconf.py --kconfig Kconfig --config $(CONFIG_FILE) >/dev/null 2>&1)
+else ifneq ($(shell find $(ROOT_DIR)/Kconfig $(ROOT_DIR)/drivers/Kconfig -newer $(CONFIG_FILE) 2>/dev/null),)
+$(shell $(PYTHON) scripts/kconfigconf.py --kconfig Kconfig --config $(CONFIG_FILE) >/dev/null 2>&1)
+endif
+endif
+
 -include $(CONFIG_FILE)
 
 # devicetree file is bound to the board via CONFIG_BOARD_DTS in defconfig
@@ -141,6 +153,29 @@ OBJCOPY     = $(COMPILER)objcopy
 SIZE        = $(COMPILER)size
 CPP         = cpp
 PYTHON      ?= python3
+
+# ---------------- 输出控制 (仿 Linux kbuild) ----------------
+# 默认: 每步一行简短回显 "  CC      build/obj/xxx.o"
+# V=1:  输出完整命令行 (调试构建问题时用)
+SHELL = /bin/bash
+.SHELLFLAGS = -o pipefail -c
+ifeq ("$(origin V)", "command line")
+  ifeq ($(V),1)
+    qcmd    = $2
+    qcmd_ld = $2
+  endif
+endif
+# qcmd_ld: LD 专用 —— 过滤 libc_nano "note:" / link 路径前缀噪音 (诊断错误不受影响)
+ifndef qcmd
+  qcmd    = @echo '  $1' && $2
+endif
+ifndef qcmd_ld
+  # ld 打印 note/warning 到 stdout, gcc 传递的到 stderr —— 两路都过滤已知噪音
+  # libnosys 半链接桩 (closer/fstatr/isattyr/lseekr/readr/writer) 的 5 组 note+warning 是已知噪音:
+  # 按库成员名过滤整段 (both the 'in function' 行和 'is not implemented' 行)
+  LD_NOISE = grep -vE ': note:|LOAD segment with RWX|libc_a-(closer|fstatr|isattyr|lseekr|readr|writer)\.o|_(close|fstat|isatty|lseek|read|write) is not implemented'
+  qcmd_ld = @echo '  $1' && ( $2 ) > >($(LD_NOISE)) 2> >($(LD_NOISE) >&2)
+endif
 
 # ---------------- 源文件收集 (Linux 风格子 Makefile) ----------------
 # 驱动: drivers/<name>/Makefile 全部 include -> obj-$(CONFIG_xxx) += ...
@@ -215,36 +250,34 @@ show-board:
 
 $(AUTOCONF): $(CONFIG_FILE) $(wildcard Kconfig drivers/Kconfig) scripts/kconfigconf.py
 	@mkdir -p $(@D)
-	$(PYTHON) scripts/kconfigconf.py --kconfig Kconfig --config $(CONFIG_FILE) --autoconf $@
+	$(call qcmd,GEN     $@,$(PYTHON) scripts/kconfigconf.py --kconfig Kconfig --config $(CONFIG_FILE) --autoconf $@)
 
 $(DTB): $(DT_FILE) $(BOARD_FILE) $(APP_FILE) $(wildcard arm/core/*.dtsi) $(wildcard arm/include/dt-bindings/**/*.h)
 	@mkdir -p $(@D)
-	$(CPP) -E -x assembler-with-cpp -nostdinc -undef $(DTS_INCLUDES) -o $(DTS_PP) $<
-	dtc -I dts -O dtb -o $@ $(DTS_PP)
+	$(call qcmd,DTC     $@,$(CPP) -E -x assembler-with-cpp -nostdinc -undef $(DTS_INCLUDES) -o $(DTS_PP) $< && dtc -I dts -O dtb -o $@ $(DTS_PP))
 
 $(DT_HEADER): $(DTB) scripts/gen_devicetree.py
-	$(PYTHON) scripts/gen_devicetree.py --dtb $< --out $@
+	$(call qcmd,GEN     $@,$(PYTHON) scripts/gen_devicetree.py --dtb $< --out $@)
 
 $(BIN_DIR)/$(TARGET).bin: $(BUILD_DIR)/$(TARGET).elf
 	@mkdir -p $(@D)
-	$(OBJCOPY) -O binary $(BUILD_DIR)/$(TARGET).elf $(BIN_DIR)/$(TARGET).bin
+	$(call qcmd,OBJCOPY $@,$(OBJCOPY) -O binary $(BUILD_DIR)/$(TARGET).elf $(BIN_DIR)/$(TARGET).bin)
 
 $(BIN_DIR)/$(TARGET).hex: $(BUILD_DIR)/$(TARGET).elf
 	@mkdir -p $(@D)
-	$(OBJCOPY) -O ihex $(BUILD_DIR)/$(TARGET).elf $(BIN_DIR)/$(TARGET).hex
+	$(call qcmd,OBJCOPY $@,$(OBJCOPY) -O ihex $(BUILD_DIR)/$(TARGET).elf $(BIN_DIR)/$(TARGET).hex)
 
 $(BUILD_DIR)/$(TARGET).elf: $(OBJECTS) $(AUTOCONF) $(DT_HEADER)
 	@mkdir -p $(@D)
-	$(LD) $(OBJECTS) $(LDFLAGS) -o $@
-	$(SIZE) $@
+	$(call qcmd_ld,LD     $@,$(LD) $(OBJECTS) $(LDFLAGS) -o $@ && $(SIZE) $@)
 
 $(OBJ_DIR)/%.o: $(ROOT_DIR)/%.c $(AUTOCONF) $(DT_HEADER)
 	@mkdir -p $(@D)
-	$(CC) -c $(CFLAGS) $(INCLUDES) -o $@ $<
+	$(call qcmd,CC      $@,$(CC) -c $(CFLAGS) $(INCLUDES) -o $@ $<)
 
 $(OBJ_DIR)/%.o: $(ROOT_DIR)/%.S
 	@mkdir -p $(@D)
-	$(AS) -c $(ASFLAGS) $(INCLUDES) -o $@ $<
+	$(call qcmd,AS      $@,$(AS) -c $(ASFLAGS) $(INCLUDES) -o $@ $<)
 
 # 两级 lunch: 1) 版型  2) 该版型下的应用
 # 直接指定: make lunch BOARD=gd32f103re APP=uart_echo (带 APP 则全程免交互)
@@ -316,6 +349,7 @@ lunch:
 	[ -n "$$dts" ] || { echo "error: CONFIG_BOARD_DTS not set in $$src"; exit 1; }; \
 	[ -f "$(ROOT_DIR)/$$dts" ] || { echo "error: devicetree not found: $$dts"; exit 1; }; \
 	cp "$(ROOT_DIR)/$$src" $(CONFIG_FILE); \
+	$(PYTHON) scripts/kconfigconf.py --kconfig Kconfig --config $(CONFIG_FILE) >/dev/null; \
 	echo "board: $$sel_b"; \
 	echo "app:   $$sel_a"; \
 	echo "config: $$src"; \
@@ -323,6 +357,7 @@ lunch:
 
 defconfig:
 	@cp $(ROOT_DIR)/$(SELECT_DEFCONFIG) $(CONFIG_FILE)
+	@$(PYTHON) scripts/kconfigconf.py --kconfig Kconfig --config $(CONFIG_FILE) >/dev/null
 	@echo "restored $(SELECT_DEFCONFIG) -> $(CONFIG_FILE)"
 
 -include $(DEP_FILES)

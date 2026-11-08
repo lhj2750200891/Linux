@@ -70,4 +70,15 @@ config DRIVER_UART_PRINTF
 		  重定向 newlib 的 _write() 到设备树中 console=1 的 uart 实例,
 		  应用层直接使用 printf 即可输出。
 
+config DRIVER_TIMER
+	bool "GD32 定时器驱动 (基本 TIMER5/6 + 通用 TIMER1~4, 设备树 basic-timers/general-timers 节点)"
+	default y
+	help
+		  扫描设备树中 compatible = "gd,gd32-basic-timer" / "gd,gd32-general-timer"
+		  的节点, 生成实例表:
+		  - 基本定时器 TIMER5/6: 周期溢出中断/纯计数 (basic_timer_* API)
+		  - 通用定时器 TIMER1~4: PWM 输出/输入捕获测频/双通道测频测占空比/
+		    纯定时中断 (general_timer_* API, 模式四选一)
+		  basic_timer_callback(idx)。通用/高级定时器后续各自独立实现。
+
 endmenu

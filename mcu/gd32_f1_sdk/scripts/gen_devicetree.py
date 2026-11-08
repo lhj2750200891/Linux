@@ -23,6 +23,11 @@ status 属性 (与 Linux 语义一致, 控制"是否初始化", 而编译裁剪�
                       console = <1>(printf 重定向到该实例)
   gd,gd32-uart-pingroup  SoC dtsi 中的引脚组容器, groups 属性描述:
                       <组号 &tx端口 tx引脚 &rx端口 rx引脚 是否重映射> ...
+  gd,gd32-general-timer  子节点 = 通用定时器实例 (TIMER1~4)。容器属性: count;
+                      子节点: timer-idx = <1~4>, mode = <TIMEBASE/PWM/FREQ/PWMCAP>,
+                      clock-hz, prescaler, period-us, irq-mode, remap;
+                      通道子节点 chN: channel = <0~3>, gpios = <&gpiox 引脚 模式>,
+                      duty-tenk(pwm), pwm-mode(pwm), polarity(freq)
 
 外设个数(count 等)必须在设备树中描述, 本脚本校验它与实际子节点/引脚列表一致, 不一致则报错。
 
@@ -57,6 +62,8 @@ CLASS_KEY = 'gd,gpio-keys'
 CLASS_MATRIX = 'gd,gpio-matrix-keys'
 CLASS_SYSTICK = 'gd,cortex-m-systick'
 CLASS_UART = 'gd,gd32-uart'
+CLASS_BASIC_TIMER = 'gd,gd32-basic-timer'
+CLASS_GENERAL_TIMER = 'gd,gd32-general-timer'
 CLASS_UART_PINGROUP = 'gd,gd32-uart-pingroup'
 CLASS_UART_PERIPH = 'gd,gd32-uart-periph'
 
@@ -401,7 +408,8 @@ def generate(root, src_note):
 
         # status = "disabled": 节点不生成实例表(驱动不初始化), 与 Linux 语义一致
         if prop_string(node, 'status', 'okay') == 'disabled':
-            if compat in (CLASS_LED, CLASS_KEY, CLASS_MATRIX, CLASS_SYSTICK, CLASS_UART):
+            if compat in (CLASS_LED, CLASS_KEY, CLASS_MATRIX, CLASS_SYSTICK,
+                      CLASS_UART, CLASS_BASIC_TIMER, CLASS_GENERAL_TIMER):
                 stats.append((node.name, compat + ' [disabled]', 0))
             continue
 
@@ -495,6 +503,196 @@ def generate(root, src_note):
             present.add('SYSTICK')
             out.append('')
             stats.append((node.name, compat, 1))
+        elif compat == CLASS_BASIC_TIMER:
+            # 基本定时器 TIMER5/6: 实例 = 每个子节点一个, 属性
+            #   timer-idx:  硬件号 5 或 6
+            #   clock-hz:   输入时钟 (APB1 定时器时钟, 板级可覆写)
+            #   prescaler:  想要的分频目标 (1 = 分到 1MHz); 实际 PSC = clock-hz/(prescaler*1e6) - 1
+            #   period-us:  周期 (us), 重装值 = period-us * prescaler - 1
+            #   irq-mode:   1=溢出中断(默认, 需配回调) 0=纯计数无中断
+            base = sanitize(node.name)
+            present.add(base)
+            count = prop_u32(node, 'count')
+            idents, inst_lines = [], []
+            for child in node.children:
+                tidx = prop_u32(child, 'timer-idx')
+                if tidx not in (5, 6):
+                    raise FdtError('节点 %s: 基本定时器 timer-idx 只能是 5 或 6 (TIMER5/6)'
+                                   % child.path())
+                clk = prop_u32(child, 'clock-hz', 54000000)
+                psc = prop_u32(child, 'prescaler', 1)
+                period = prop_u32(child, 'period-us')
+                if psc == 0 or period == 0:
+                    raise FdtError('节点 %s: prescaler/period-us 必须为正整数'
+                                   % child.path())
+                # 换算 (prescaler=N 为分频比: 计数时钟 = clock/N, 1 tick = N/clock 秒):
+                #   PSC 装入值 = N - 1          (16 位, N <= 65536)
+                #   CAR 装入值 = period_us * clock / (N * 1e6) - 1   (16 位)
+                # 例: clock=108MHz, N=10800 -> 10kHz, 1tick=100us,
+                #     period-us=500000 -> CAR+1 = 5000 (500ms)
+                if psc > 0x10000:
+                    raise FdtError('节点 %s: prescaler=%d 超出 16 位 (最大 65536)'
+                                   % (child.path(), psc))
+                psc_reg = psc - 1
+                # tick 数 (即 CAR+1) = period(us) * 计数时钟(Hz) / 1e6
+                #   计数时钟 = clk / psc
+                arr_reg = (period * clk + psc * 1000000 - 1) // (psc * 1000000)
+                if arr_reg == 0 or arr_reg > 0x10000:
+                    raise FdtError('节点 %s: period-us=%d 超出 16 位重装值 (prescaler=%d 时最长 %d us),'
+                                   ' 增大 prescaler'
+                                   % (child.path(), period, psc,
+                                      0x10000 * psc * 1000000 // clk))
+                irq = prop_u32(child, 'irq-mode', 1)
+                inst_lines.append('\t{ .timer_idx = %d, .clock_hz = %u, .psc_reg = %u, '
+                                  '.arr_reg = %u, .irq_mode = %u }'
+                                  % (tidx, clk, psc_reg, arr_reg - 1, irq)
+                                  )
+                idents.append(child.name)
+            check_count(node, 'count', count, len(inst_lines))
+            out.append('#define DT_%s_COUNT %d' % (base, len(inst_lines)))
+            if inst_lines:
+                out.append('#define DT_%s_INSTANCES \\' % base)
+                for i, line in enumerate(inst_lines):
+                    if i != len(inst_lines) - 1:
+                        line += ', \\'
+                    out.append(line)
+                out.append('')
+            for idx, ident in enumerate(idents):
+                macro = 'DT_%s_IDX' % sanitize(ident)
+                if macro in used_macros:
+                    raise FdtError('重复的节点名: %s' % ident)
+                used_macros.add(macro)
+                out.append('#define %s %d' % (macro, idx))
+            out.append('')
+            stats.append((node.name, compat, len(inst_lines)))
+        elif compat == CLASS_GENERAL_TIMER:
+            # 通用定时器 TIMER1~4: 实例 = 每个子节点一个, 子节点属性:
+            #   timer-idx:  硬件号 1~4
+            #   clock-hz:   输入时钟 (APB1 定时器时钟, 默认 108MHz)
+            #   mode:       GD32_TIMER_MODE_TIMEBASE(0)/PWM(1)/FREQ(2)/PWMCAP(3)
+            #   prescaler:  分频比 N (计数时钟 = clock-hz/N)
+            #   period-us:  周期 us (timebase/pwm 必配)
+            #   irq-mode:   1=开中断(默认) 0=纯计数
+            #   remap:      0=默认 1=部分重映射 2=完全重映射 (TIMER3 仅 1, TIMER4 无)
+            # 通道子节点 chN (pwm 1~4 个 / freq 1 个 / pwmcap 2 个相邻对 / timebase 无):
+            #   channel:  通道号 0~3
+            #   gpios:    <&gpiox 引脚 模式>; pwm=GD32_MODE_AF_PP, 捕获=浮空/IPU/IPD
+            #   duty-tenk: (pwm) 万分比占空 1~9999, 缺省 5000
+            #   pwm-mode:  (pwm) 0=PWM0(默认) 1=PWM1
+            #   polarity:  (freq) 0=上升沿(默认) 1=下降沿; pwmcap 固定双边沿不配
+            base = sanitize(node.name)
+            present.add(base)
+            count = prop_u32(node, 'count')
+            seen_hw = {}
+            idents, inst_lines = [], []
+            for child in node.children:
+                tidx = prop_u32(child, 'timer-idx')
+                if tidx not in (1, 2, 3, 4):
+                    raise FdtError('节点 %s: 通用定时器 timer-idx 只能是 1~4 (TIMER1~4)'
+                                   % child.path())
+                if tidx in seen_hw:
+                    raise FdtError('节点 %s: TIMER%d 已由节点 %s 使用, 一个硬件定时器只能一个实例'
+                                   % (child.path(), tidx, seen_hw[tidx]))
+                seen_hw[tidx] = child.name
+                mode = prop_u32(child, 'mode', 0)
+                if mode not in (0, 1, 2, 3):
+                    raise FdtError('节点 %s: mode 应为 GD32_TIMER_MODE_TIMEBASE(0)/PWM(1)/'
+                                   'FREQ(2)/PWMCAP(3), 见 dt-bindings/timer/gd32f10x-timer.h'
+                                   % child.path())
+                clk = prop_u32(child, 'clock-hz', 108000000)
+                psc = prop_u32(child, 'prescaler', 1)
+                period = prop_u32(child, 'period-us', 0)
+                irq = prop_u32(child, 'irq-mode', 1)
+                remap = prop_u32(child, 'remap', 0)
+                if remap not in (0, 1, 2):
+                    raise FdtError('节点 %s: remap 应为 0(默认)/1(部分)/2(完全)' % child.path())
+                if remap and tidx == 4:
+                    raise FdtError('节点 %s: TIMER4 无重映射引脚' % child.path())
+                if remap == 2 and tidx == 3:
+                    raise FdtError('节点 %s: TIMER3 只有部分重映射 (remap=1)' % child.path())
+                # PSC/CAR 换算 (与 basic-timer 相同公式)
+                if psc == 0 or psc > 0x10000:
+                    raise FdtError('节点 %s: prescaler=%d 非法 (1~65536)' % (child.path(), psc))
+                psc_reg = psc - 1
+                arr_reg = 0
+                if mode in (0, 1):
+                    if period == 0:
+                        raise FdtError('节点 %s: timebase/pwm 模式必须配 period-us' % child.path())
+                    arr_reg = (period * clk + psc * 1000000 - 1) // (psc * 1000000)
+                    if arr_reg == 0 or arr_reg > 0x10000:
+                        raise FdtError('节点 %s: period-us=%d 超出 16 位重装值 (prescaler=%d 时'
+                                       ' 最长 %d us), 增大 prescaler'
+                                       % (child.path(), period, psc,
+                                          0x10000 * psc * 1000000 // clk))
+                    arr_reg -= 1
+                # ---- 通道子节点 -> 4 个槽位 (ch=0xFF 表示未用) ----
+                slots = [{'ch': 0xFF, 'port': 0, 'pin': 0, 'pinmode': 0,
+                          'aux': 0, 'val': 0} for _ in range(4)]
+                for gch in child.children:
+                    chan = prop_u32(gch, 'channel')
+                    if chan not in (0, 1, 2, 3):
+                        raise FdtError('节点 %s: channel 应为 0~3' % gch.path())
+                    if slots[chan]['ch'] != 0xFF:
+                        raise FdtError('节点 %s: 通道 %d 重复配置' % (gch.path(), chan))
+                    spec = parse_gpio_specs(gch, 'gpios', root, phandles)[0]
+                    slot = slots[chan]
+                    slot['ch'], slot['port'], slot['pin'], slot['pinmode'] = (
+                        chan, spec[0], spec[1], spec[2])
+                    if mode == 1:      # pwm: duty-tenk 万分比 -> 比较值 tick
+                        dval = prop_u32(gch, 'duty-tenk', 5000)
+                        if dval < 1 or dval > 9999:
+                            raise FdtError('节点 %s: duty-tenk 应为 1~9999 (5000=50%%)'
+                                           % gch.path())
+                        val = dval * (arr_reg + 1) // 10000
+                        slot['val'] = max(1, min(val, arr_reg))
+                        slot['aux'] = prop_u32(gch, 'pwm-mode', 0)
+                    elif mode == 2:    # freq: 捕获边沿
+                        pol = prop_u32(gch, 'polarity', 0)
+                        if pol not in (0, 1):
+                            raise FdtError('节点 %s: polarity 应为 0(上升沿)/1(下降沿)'
+                                           % gch.path())
+                        slot['aux'] = pol
+                used = [s for s in slots if s['ch'] != 0xFF]
+                # ---- 模式与通道个数校验 ----
+                if mode == 0 and used:
+                    raise FdtError('节点 %s: timebase 模式不配通道(无引脚输出/输入)'
+                                   % child.path())
+                if mode == 1 and not used:
+                    raise FdtError('节点 %s: pwm 模式必须配 chN 通道子节点' % child.path())
+                if mode == 2 and len(used) != 1:
+                    raise FdtError('节点 %s: freq 模式必须恰好配一个 chN 通道' % child.path())
+                if mode == 3:
+                    chs = sorted(s['ch'] for s in used)
+                    if chs not in ([0, 1], [2, 3]):
+                        raise FdtError('节点 %s: pwmcap 模式必须配一对相邻通道'
+                                       ' (CH0+CH1 或 CH2+CH3), 低号直连上升沿/高号交叉下降沿'
+                                       % child.path())
+                # ---- 输出行 ----
+                chs_str = ', '.join('{%d, %d, %d, 0x%02X, %d, %d}'
+                                    % (s['ch'], s['port'], s['pin'], s['pinmode'],
+                                       s['aux'], s['val']) for s in slots)
+                inst_lines.append('\t{ .timer_idx = %d, .clock_hz = %u, .psc_reg = %u, '
+                                  '.arr_reg = %u, .mode = %u, .irq_mode = %u, .remap = %u, '
+                                  '.chans = { %s } }'
+                                  % (tidx, clk, psc_reg, arr_reg, mode, irq, remap, chs_str))
+                idents.append(child.name)
+            check_count(node, 'count', count, len(inst_lines))
+            out.append('#define DT_%s_COUNT %d' % (base, len(inst_lines)))
+            if inst_lines:
+                out.append('#define DT_%s_INSTANCES \\' % base)
+                for i, line in enumerate(inst_lines):
+                    if i != len(inst_lines) - 1:
+                        line += ', \\'
+                    out.append('\t' + line)
+                out.append('')
+            for idx, ident in enumerate(idents):
+                macro = 'DT_%s_IDX' % sanitize(ident)
+                if macro in used_macros:
+                    raise FdtError('重复的节点名: %s' % ident)
+                used_macros.add(macro)
+                out.append('#define %s %d' % (macro, idx))
+            out.append('')
+            stats.append((node.name, compat, len(inst_lines)))
         elif compat == CLASS_UART:
             base = sanitize(node.name)
             present.add(base)
@@ -537,6 +735,12 @@ def generate(root, src_note):
     if 'UARTS' not in present:
         out.append('#define DT_UARTS_COUNT 0')
         out.append('#define DT_UARTS_MAX_BUF_SIZE 1')
+        out.append('')
+    if 'BASIC_TIMERS' not in present:
+        out.append('#define DT_BASIC_TIMERS_COUNT 0')
+        out.append('')
+    if 'GENERAL_TIMERS' not in present:
+        out.append('#define DT_GENERAL_TIMERS_COUNT 0')
         out.append('')
     if 'SYSTICK' not in present:
         out.append('#define DT_SYSTICK_CLOCK_FREQUENCY 0')
