@@ -45,7 +45,17 @@ properties:
 
   count:
     $ref: /schemas/types.yaml#/definitions/uint32
-    description: 容器内实例个数 (必须与子节点数一致)
+    description: |
+      容器内实例个数。可选: 缺省按启用 (status != "disabled") 的子节点数
+      自动计数; 显式写出时脚本校验须与启用子节点数一致。
+
+  status:
+    enum: [ okay, disabled ]
+    description: |
+      两级开关: 容器级 disabled 整类串口不生成实例表; 子节点 (uart1/uart2/...)
+      级 disabled 只裁掉该实例 —— 其余实例下标自动重排, 该实例的
+      DT_UARTx_IDX 宏仍生成 (值为哨兵 0xFF), 驱动 API 收到后安全空操作,
+      应用代码无需修改。
 
   uart-idx:
     $ref: /schemas/types.yaml#/definitions/uint32
@@ -138,9 +148,9 @@ examples:
   - |
     uarts {
         compatible = "gd,gd32-uart";
-        count = <2>;
 
         uart1 {
+            status = "okay";
             pgroup = <&usart0 0>;
             baud-rate = <115200>;
             dma-mode = <1>;

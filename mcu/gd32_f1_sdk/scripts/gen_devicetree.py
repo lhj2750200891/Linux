@@ -9,6 +9,15 @@ status 属性 (与 Linux 语义一致, 控制"是否初始化", 而编译裁剪�
   status = "okay" (或缺省)   节点启用, 生成实例表, 驱动经 DEVICE_INIT 自动初始化
   status = "disabled"        节点禁用, 只生成 COUNT 0, 驱动不初始化(API 为空实现)
 
+status 可写在两级:
+  容器节点 (uarts/leds/...)  整类硬件的总开关, disabled 时整类不生成实例
+  实例子节点 (uart1/led1/...) 单个实例开关, disabled 时该实例不进实例表,
+                              其余实例下标自动重排, 不用它就关, 不必注释整段节点
+  (两级都写时子节点可覆盖容器: 容器 okay + 子节点 disabled = 只关这一个)
+
+count 属性为可选: 未写时按启用的子节点个数自动计数; 写了则校验一致
+  (校验口径 = 启用(status != disabled)的子节点个数)
+
 支持的节点类型(由 compatible 区分):
   gd,gpio-leds        子节点 = LED。   容器属性: count;  子节点: gpios = <&gpio 引脚 模式>, init-level = <0|1>
   gd,gpio-keys        子节点 = 按键。   容器属性: count;  子节点: gpios = ..., active-level = <按下电平>
@@ -218,9 +227,44 @@ def sanitize(name):
 
 def check_count(node, prop_name, declared, actual):
     """校验设备树中声明的个数与实际解析到的实例个数一致"""
-    if declared != actual:
+    if declared is not None and declared != actual:
         raise FdtError('节点 %s: 属性 %s = %d 与实际个数 %d 不一致, 请修改设备树'
                        % (node.path(), prop_name, declared, actual))
+
+
+def child_enabled(child):
+    """实例子节点是否启用: status 缺省/\"okay\" 启用, \"disabled\" 跳过"""
+    st = prop_string(child, 'status', 'okay')
+    if st not in ('okay', 'disabled'):
+        raise FdtError('节点 %s: status 应为 \"okay\"/\"disabled\", 当前 \"%s\"'
+                       % (child.path(), st))
+    return st != 'disabled'
+
+
+# disabled 实例的哨兵下标: 所有驱动 API 均校验 idx < DT_xxx_COUNT, 越界即安全空操作
+DT_IDX_DISABLED = 0xFF
+
+
+def emit_idx_macros(out, node, used_macros, enabled_idents, disabled_idents):
+    """生成 DT_<子节点名>_IDX 宏。
+
+    enabled_idents:  启用实例, 依次编号 0,1,2...
+    disabled_idents: status="disabled" 的实例, 固定哨兵下标 DT_IDX_DISABLED(0xFF),
+                     引用它的应用代码无需修改 —— 驱动 API 越界校验后安全空操作。
+    """
+    for idx, ident in enumerate(enabled_idents):
+        macro = 'DT_%s_IDX' % sanitize(ident)
+        if macro in used_macros:
+            raise FdtError('重复的节点名: %s' % ident)
+        used_macros.add(macro)
+        out.append('#define %s %d' % (macro, idx))
+    for ident in disabled_idents:
+        macro = 'DT_%s_IDX' % sanitize(ident)
+        if macro in used_macros:
+            raise FdtError('重复的节点名: %s' % ident)
+        used_macros.add(macro)
+        out.append('#define %s DT_IDX_DISABLED   /* status=\\"disabled\\" 实例, 驱动 API 安全空操作 */'
+                   % macro)
 
 
 def emit_instances(out, macro_base, specs, levels, extras=None):
@@ -392,6 +436,10 @@ def generate(root, src_note):
     out.append('#ifndef BUILD_GENERATED_DEVICETREE_H')
     out.append('#define BUILD_GENERATED_DEVICETREE_H')
     out.append('')
+    out.append('/* status="disabled" 实例的哨兵下标: 驱动 API 均校验 idx < DT_xxx_COUNT,')
+    out.append(' * 传入哨兵即安全空操作 —— 应用代码引用被裁剪实例时无需修改 */')
+    out.append('#define DT_IDX_DISABLED 0xFF')
+    out.append('')
     out.append('/* 根节点信息 */')
     out.append('#define DT_MODEL "%s"' % prop_string(root, 'model', 'unknown'))
     out.append('#define DT_ROOT_COMPATIBLE "%s"' % prop_string(root, 'compatible', 'unknown'))
@@ -407,7 +455,12 @@ def generate(root, src_note):
         compat = prop_string(node, 'compatible')
 
         # status = "disabled": 节点不生成实例表(驱动不初始化), 与 Linux 语义一致
-        if prop_string(node, 'status', 'okay') == 'disabled':
+        # (子节点级 status 由各容器分支的 child_enabled() 处理, 可关单个实例)
+        st = prop_string(node, 'status', 'okay')
+        if st not in ('okay', 'disabled'):
+            raise FdtError('节点 %s: status 应为 "okay"/"disabled", 当前 "%s"'
+                           % (node.path(), st))
+        if st == 'disabled':
             if compat in (CLASS_LED, CLASS_KEY, CLASS_MATRIX, CLASS_SYSTICK,
                       CLASS_UART, CLASS_BASIC_TIMER, CLASS_GENERAL_TIMER):
                 stats.append((node.name, compat + ' [disabled]', 0))
@@ -416,27 +469,25 @@ def generate(root, src_note):
         if compat == CLASS_LED:
             base = sanitize(node.name)
             present.add(base)
-            count = prop_u32(node, 'count')    # 个数由设备树描述
-            specs, levels, idents = [], [], []
+            count = prop_u32(node, 'count') if 'count' in node.props else None    # 可选, 缺省按启用子节点个数
+            specs, levels, idents, dis = [], [], [], []
             for child in node.children:
+                if not child_enabled(child):
+                    dis.append(child.name)
+                    continue
                 spec = parse_gpio_specs(child, 'gpios', root, phandles)[0]
                 specs.append(spec)
                 levels.append(prop_u32(child, 'init-level', 0))
                 idents.append(child.name)
             check_count(node, 'count', count, len(specs))
             emit_instances(out, base, specs, levels)
-            for idx, ident in enumerate(idents):
-                macro = 'DT_%s_IDX' % sanitize(ident)
-                if macro in used_macros:
-                    raise FdtError('重复的节点名: %s' % ident)
-                used_macros.add(macro)
-                out.append('#define %s %d' % (macro, idx))
+            emit_idx_macros(out, node, used_macros, idents, dis)
             out.append('')
             stats.append((node.name, compat, len(specs)))
         elif compat == CLASS_KEY:
             base = sanitize(node.name)
             present.add(base)
-            count = prop_u32(node, 'count')    # 个数由设备树描述
+            count = prop_u32(node, 'count') if 'count' in node.props else None    # 可选, 缺省按启用子节点个数
             # 工作方式: 0=EXTI 中断(默认, KEY_MODE_IRQ)  1=轮询(KEY_MODE_POLL)
             key_mode = prop_u32(node, 'key-mode', 0)
             if key_mode not in (0, 1):
@@ -444,8 +495,11 @@ def generate(root, src_note):
                                % node.path())
             # 轮询消抖时间 ms (仅轮询模式使用, 默认 20)
             debounce = prop_u32(node, 'debounce-ms', 20)
-            specs, levels, idents, triggers = [], [], [], []
+            specs, levels, idents, triggers, dis = [], [], [], [], []
             for child in node.children:
+                if not child_enabled(child):
+                    dis.append(child.name)
+                    continue
                 spec = parse_gpio_specs(child, 'gpios', root, phandles)[0]
                 specs.append(spec)
                 # ---- 有效电平 active-level: 显式配置优先, 缺省按上下拉推导 ----
@@ -477,12 +531,7 @@ def generate(root, src_note):
             emit_instances(out, base, specs, levels, triggers)
             out.append('#define DT_%s_MODE %d' % (base, key_mode))
             out.append('#define DT_%s_DEBOUNCE_MS %d' % (base, debounce))
-            for idx, ident in enumerate(idents):
-                macro = 'DT_%s_IDX' % sanitize(ident)
-                if macro in used_macros:
-                    raise FdtError('重复的节点名: %s' % ident)
-                used_macros.add(macro)
-                out.append('#define %s %d' % (macro, idx))
+            emit_idx_macros(out, node, used_macros, idents, dis)
             out.append('')
             stats.append((node.name, compat, len(specs)))
         elif compat == CLASS_MATRIX:
@@ -512,9 +561,12 @@ def generate(root, src_note):
             #   irq-mode:   1=溢出中断(默认, 需配回调) 0=纯计数无中断
             base = sanitize(node.name)
             present.add(base)
-            count = prop_u32(node, 'count')
-            idents, inst_lines = [], []
+            count = prop_u32(node, 'count') if 'count' in node.props else None    # 可选, 缺省按启用子节点个数
+            idents, inst_lines, dis = [], [], []
             for child in node.children:
+                if not child_enabled(child):
+                    dis.append(child.name)
+                    continue
                 tidx = prop_u32(child, 'timer-idx')
                 if tidx not in (5, 6):
                     raise FdtError('节点 %s: 基本定时器 timer-idx 只能是 5 或 6 (TIMER5/6)'
@@ -557,12 +609,7 @@ def generate(root, src_note):
                         line += ', \\'
                     out.append(line)
                 out.append('')
-            for idx, ident in enumerate(idents):
-                macro = 'DT_%s_IDX' % sanitize(ident)
-                if macro in used_macros:
-                    raise FdtError('重复的节点名: %s' % ident)
-                used_macros.add(macro)
-                out.append('#define %s %d' % (macro, idx))
+            emit_idx_macros(out, node, used_macros, idents, dis)
             out.append('')
             stats.append((node.name, compat, len(inst_lines)))
         elif compat == CLASS_GENERAL_TIMER:
@@ -582,10 +629,13 @@ def generate(root, src_note):
             #   polarity:  (freq) 0=上升沿(默认) 1=下降沿; pwmcap 固定双边沿不配
             base = sanitize(node.name)
             present.add(base)
-            count = prop_u32(node, 'count')
+            count = prop_u32(node, 'count') if 'count' in node.props else None    # 可选, 缺省按启用子节点个数
             seen_hw = {}
-            idents, inst_lines = [], []
+            idents, inst_lines, dis = [], [], []
             for child in node.children:
+                if not child_enabled(child):
+                    dis.append(child.name)
+                    continue
                 tidx = prop_u32(child, 'timer-idx')
                 if tidx not in (1, 2, 3, 4):
                     raise FdtError('节点 %s: 通用定时器 timer-idx 只能是 1~4 (TIMER1~4)'
@@ -629,6 +679,8 @@ def generate(root, src_note):
                 slots = [{'ch': 0xFF, 'port': 0, 'pin': 0, 'pinmode': 0,
                           'aux': 0, 'val': 0} for _ in range(4)]
                 for gch in child.children:
+                    if not child_enabled(gch):
+                        continue
                     chan = prop_u32(gch, 'channel')
                     if chan not in (0, 1, 2, 3):
                         raise FdtError('节点 %s: channel 应为 0~3' % gch.path())
@@ -685,22 +737,21 @@ def generate(root, src_note):
                         line += ', \\'
                     out.append('\t' + line)
                 out.append('')
-            for idx, ident in enumerate(idents):
-                macro = 'DT_%s_IDX' % sanitize(ident)
-                if macro in used_macros:
-                    raise FdtError('重复的节点名: %s' % ident)
-                used_macros.add(macro)
-                out.append('#define %s %d' % (macro, idx))
+            emit_idx_macros(out, node, used_macros, idents, dis)
             out.append('')
             stats.append((node.name, compat, len(inst_lines)))
         elif compat == CLASS_UART:
             base = sanitize(node.name)
             present.add(base)
-            count = prop_u32(node, 'count')
+            count = prop_u32(node, 'count') if 'count' in node.props else None    # 可选, 缺省按启用子节点个数
             idents = []
             inst_lines = []
             max_buf = 1
+            dis = []
             for child in node.children:
+                if not child_enabled(child):
+                    dis.append(child.name)
+                    continue
                 inst = uart_parse_instance(child, root, phandles, pingroups)
                 if inst.rx_buf_size > max_buf:
                     max_buf = inst.rx_buf_size
@@ -717,12 +768,7 @@ def generate(root, src_note):
                 out.append('')
             # 驱动的静态接收缓冲数组按最大实例缓冲区对齐
             out.append('#define DT_%s_MAX_BUF_SIZE %d' % (base, max_buf))
-            for idx, ident in enumerate(idents):
-                macro = 'DT_%s_IDX' % sanitize(ident)
-                if macro in used_macros:
-                    raise FdtError('重复的节点名: %s' % ident)
-                used_macros.add(macro)
-                out.append('#define %s %d' % (macro, idx))
+            emit_idx_macros(out, node, used_macros, idents, dis)
             out.append('')
             stats.append((node.name, compat, len(inst_lines)))
 

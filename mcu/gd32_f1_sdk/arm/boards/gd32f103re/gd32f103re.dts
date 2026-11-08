@@ -9,19 +9,21 @@
 	leds {
 		compatible = "gd,gpio-leds";
 		status = "okay";
-		count = <3>;              
 
 		led1 {
+			status = "okay";
 			gpios = <&gpioc 13 GD32_MODE_OUT_PP>;
 			init-level = <GD32_LEVEL_HIGH>;
 		};
 
 		led2 {
+			status = "okay";
 			gpios = <&gpioc 9 GD32_MODE_OUT_PP>;
 			init-level = <GD32_LEVEL_HIGH>;
 		};
 
 		led3 {
+			status = "okay";
 			gpios = <&gpioc 8 GD32_MODE_OUT_PP>;
 			init-level = <GD32_LEVEL_HIGH>;
 		};
@@ -30,26 +32,29 @@
 	keys {
 		compatible = "gd,gpio-keys";
 		status = "okay";
-		count = <4>;
 		key-mode = <KEY_MODE_IRQ>;    /* EXTI 中断(默认); 轮询改 KEY_MODE_POLL + debounce-ms */
 
 		key1 {
+			status = "okay";
 			gpios = <&gpioa 7 GD32_MODE_IPU>;
 			active-level = <GD32_LEVEL_LOW>;
 			trigger = <KEY_TRIG_FALLING>;   /* 低电平按下 -> 下降沿(默认) */
 		};
 
 		key2 {
+			status = "okay";
 			gpios = <&gpioc 4 GD32_MODE_IPU>;
 			active-level = <GD32_LEVEL_LOW>;
 		};
 
 		key3 {
+			status = "okay";
 			gpios = <&gpioc 5 GD32_MODE_IPU>;
 			active-level = <GD32_LEVEL_LOW>;
 		};
 
 		key4 {
+			status = "okay";
 			gpios = <&gpioa 0 GD32_MODE_IPD>;
 			active-level = <GD32_LEVEL_HIGH>;   /* 高有效: 也可省略, 会按 IPD 推导 */
 		};
@@ -58,9 +63,9 @@
 	basic-timers {
 		compatible = "gd,gd32-basic-timer";
 		status = "okay";
-		count = <2>;
 
 		btim1 {
+			status = "okay";
 			timer-idx = <5>;
 			clock-hz = <108000000>;
 			prescaler = <10800>;
@@ -69,6 +74,7 @@
 		};
 
 		btim2 {
+			status = "okay";
 			timer-idx = <6>;
 			clock-hz = <108000000>;
 			prescaler = <10800>;
@@ -84,10 +90,10 @@
 	general-timers {
 		compatible = "gd,gd32-general-timer";
 		status = "okay";
-		count = <3>;
 
 		/* TIMER1: 1s 定时中断 (时基), prescaler=10800 -> 10kHz, 10000 tick */
 		gtim1 {
+			status = "okay";
 			timer-idx = <1>;
 			mode = <GD32_TIMER_MODE_TIMEBASE>;
 			clock-hz = <108000000>;
@@ -98,6 +104,7 @@
 
 		/* TIMER2: PWM 输出, 1kHz/50%, CH2 -> PB0 (TIMER2 默认引脚组 CH2=PB0) */
 		gtim2 {
+			status = "okay";
 			timer-idx = <2>;
 			mode = <GD32_TIMER_MODE_PWM>;
 			clock-hz = <108000000>;
@@ -116,6 +123,7 @@
 		 * prescaler=108 -> 1MHz 计数 (1tick=1us): 1kHz 周期=1000 tick,
 		 * 16 位可测 15.3Hz~1MHz, 占空比分辨率 0.1% */
 		gtim3 {
+			status = "okay";
 			timer-idx = <3>;
 			mode = <GD32_TIMER_MODE_PWMCAP>;
 			clock-hz = <108000000>;
@@ -151,9 +159,9 @@
 	uarts {
 		compatible = "gd,gd32-uart";
 		status = "okay";
-		count = <3>;
 
 		uart1 {
+			status = "okay";
 			pgroup = <&usart0 0>;
 			baud-rate = <115200>;
 			data-bits = <GD32_UART_DATA_8>;
@@ -168,6 +176,7 @@
 
 		/* USART1: PA2/PA3, 115200, DMA 收 + IDLE 判帧 (RX=DMA0_CH5, TX=CH6) */
 		uart2 {
+			status = "okay";
 			pgroup = <&usart1 0>;
 			baud-rate = <115200>;
 			data-bits = <GD32_UART_DATA_8>;
@@ -180,8 +189,10 @@
 			console = <0>;
 		};
 
-		/* USART2: PB10/PB11, 115200, DMA 收 + IDLE 判帧 (RX=DMA0_CH2, TX=CH1) */
+		/* USART2: PB10/PB11, 115200, DMA 收 + IDLE 判帧 (RX=DMA0_CH2, TX=CH1)
+		 * 不用时改 status = "disabled" 即可, uart1/uart2 的下标不受影响 */
 		uart3 {
+			status = "okay";
 			pgroup = <&usart2 0>;
 			baud-rate = <115200>;
 			data-bits = <GD32_UART_DATA_8>;
