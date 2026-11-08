@@ -9,6 +9,7 @@
 # 目录约定:
 #   版型(板卡): configs/<板型>_defconfig + arm/boards/<板型>/<板型>.dts
 #   应用:      application/<板型>/<应用>/ (Makefile 必需, defconfig 可选覆盖板级)
+#              板型下无应用时回退公共空应用 application/default/ (bring-up 用)
 
 ROOT_DIR    = .
 TARGET      = $(BOARD)_$(APP)
@@ -82,12 +83,19 @@ endif
 endif
 endif
 
-ifeq ($(APP),)
-$(error no app selected for board '$(BOARD)': run 'make lunch' first)
+# 公共默认空应用: 板型下没有应用 (或尚未选择) 时回退, 避免直接报错
+DEFAULT_APP = default
+ifeq ($(wildcard $(ROOT_DIR)/application/$(DEFAULT_APP)/Makefile),)
+$(error default app not found: application/$(DEFAULT_APP)/Makefile)
 endif
 
-ifeq ($(filter $(APP),$(BOARD_APPS)),)
-$(error app '$(APP)' not found under application/$(BOARD)/ (has Makefile?), available: $(BOARD_APPS))
+ifeq ($(APP),)
+APP := $(DEFAULT_APP)
+endif
+
+# 板型自有应用 + 公共 default 都合法 (板型可放 application/<板型>/default/ 覆盖公共版)
+ifeq ($(filter $(APP),$(BOARD_APPS) $(DEFAULT_APP)),)
+$(error app '$(APP)' not found under application/$(BOARD)/ (has Makefile?), available: $(BOARD_APPS) $(DEFAULT_APP))
 endif
 
 # ---------------- 配置文件 ----------------
@@ -189,7 +197,13 @@ $(foreach mf,$(wildcard $(ROOT_DIR)/drivers/*/Makefile),$(eval $(call add-driver
 drv-dir :=
 
 ifeq ($(filter lunch clean distclean,$(MAKECMDGOALS)),)
-app-dir := application/$(BOARD)/$(APP)
+# 板型自有应用优先; 公共 default 回退 (板型可放自有 default/ 覆盖)
+ifeq ($(wildcard $(ROOT_DIR)/application/$(BOARD)/$(APP)/Makefile),)
+APP_DIR = application/$(DEFAULT_APP)
+else
+APP_DIR = application/$(BOARD)/$(APP)
+endif
+app-dir := $(APP_DIR)
 include $(ROOT_DIR)/$(app-dir)/Makefile
 app-dir :=
 endif
@@ -222,7 +236,7 @@ INCLUDES    = -I$(ROOT_DIR)/vendor/cmsis/core \
               -I$(ROOT_DIR)/vendor/cmsis/device \
               -I$(ROOT_DIR)/vendor/fwlib/include \
               -I$(ROOT_DIR)/arm/include \
-              -I$(ROOT_DIR)/application/$(BOARD)/$(APP) \
+              -I$(ROOT_DIR)/$(APP_DIR) \
               $(DRIVER_INCLUDES)
 
 # 设备树 include 路径: 板级 dts 所在目录 + SoC dtsi(arm/core) + dt-bindings(arm/include)
@@ -313,9 +327,11 @@ lunch:
 	for d in $(ROOT_DIR)/application/$$sel_b/*/; do \
 		[ -f "$$d/Makefile" ] && apps="$$apps$$(basename $$d) "; \
 	done; \
-	[ -z "$$apps" ] && { echo "error: no apps under application/$$sel_b/ (need Makefile)"; exit 1; }; \
 	if [ -n "$(APP_ON_CMD)" ]; then \
 		sel_a="$(APP_ON_CMD)"; \
+	elif [ -z "$$apps" ]; then \
+		echo "note: no apps under application/$$sel_b/, fall back to default empty app"; \
+		sel_a="default"; \
 	else \
 		echo "board: $$sel_b"; \
 		i=0; cur=0; \
@@ -337,7 +353,7 @@ lunch:
 		sel_a=`echo "$$apps" | cut -d' ' -f "$$n"`; \
 		sel_a=$$(echo $$sel_a); \
 	fi; \
-	echo "$$apps" | grep -qw "$$sel_a" || { echo "error: app '$$sel_a' not found under application/$$sel_b/"; exit 1; }; \
+	echo "$$apps default" | grep -qw "$$sel_a" || { echo "error: app '$$sel_a' not found under application/$$sel_b/"; exit 1; }; \
 	echo "$$sel_a" > $(APP_FILE); \
 	# ---------- 3. 应用配置 (应用自带 defconfig 优先) ----------; \
 	if [ -f "$(ROOT_DIR)/application/$$sel_b/$$sel_a/defconfig" ]; then \
