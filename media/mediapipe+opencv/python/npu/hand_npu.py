@@ -61,6 +61,8 @@ class HandNPU:
     def _split(outs, main_dim):
         """按最后一维长度识别输出张量(palm: 18=框+7关键点 / 1=分数; landmark: 63=21点 / 1=手flag),
         各取第一个匹配(官方输出顺序: palm=[18,1], landmark=[63,手flag1,左右手1,world63])"""
+        if not outs:                             # 推理被中断(如Ctrl+C)时RKNN返回None, 放弃本帧
+            return None, None
         main, score = None, None
         for o in outs:
             if o.shape[-1] == main_dim and main is None:

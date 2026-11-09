@@ -205,4 +205,74 @@
 			console = <0>;
 		};
 	};
+
+	/* ------------------------------------------------------------------
+	 * I2C 总线 (主机模式): i2c0 -> PB6=SCL/PB7=SDA, 100kHz
+	 * 挂载的从机设备 = i2c0 的子节点, 仿 Linux: reg = 7 位从机地址,
+	 * 每个从机有独立 status 开关; 应用用 oled0 -> DT_OLED0_IDX 访问
+	 * ------------------------------------------------------------------ */
+	i2c-buses {
+		compatible = "gd,gd32-i2c";
+		status = "okay";
+
+		i2c0 {
+			status = "okay";
+			pgroup = <&i2c0grp 0>;
+			speed = <GD32_I2C_SPEED_STANDARD>;   /* 100kHz; 400k 改 FAST */
+			/* own-addr = <0x00>;   本机作从机时才有意义, 主机模式不用 */
+
+			/* SSD1306 0.96 寸 OLED, 7 位地址 0x3C (模块常见 0x3C/0x3D) */
+			oled0: oled0@3c {
+				status = "okay";
+				reg = <0x3c>;
+				compatible = "sinowealth,ssd1306";
+			};
+
+			/* 一主多从示例: 第二个从机 (LM75 温度传感器 @0x48)。
+			 * 不焊时 status = "disabled" 即可, 不影响 oled0, 应用引用
+			 * DT_SENSOR1_IDX 会得到哨兵值, 驱动 API 安全空操作。
+			sensor1: sensor1@48 {
+				status = "okay";
+				reg = <0x48>;
+				compatible = "national,lm75";
+			}; */
+		};
+	};
+
+	/* ------------------------------------------------------------------
+	 * SPI 总线 (主机模式): spi1 -> PB13=SCK/PB14=MISO/PB15=MOSI
+	 * 片选 = 软 CS (cs-gpios 列表), 从机节点 reg = 列表下标 (仿 Linux);
+	 * 测试应用 spi_test 需跳线 PB15(MOSI)-->PB14(MISO) 做回环自发自收
+	 * ------------------------------------------------------------------ */
+	spi-buses {
+		compatible = "gd,gd32-spi";
+		status = "okay";
+
+		spi1 {
+			status = "okay";
+			pgroup = <&spi1grp 0>;
+			baud-hz = <9000000>;                  /* 目标 SCLK, 驱动自动就近降档 */
+			frame-size = <GD32_SPI_FRAME_8BIT>;
+			cpol = <GD32_SPI_CPOL_LOW>;
+			cpha = <GD32_SPI_CPHA_1EDGE>;         /* 0/0 = SPI MODE0 */
+			first-bit = <GD32_SPI_FIRST_MSB>;
+
+			/* 片选 GPIO 列表 (空闲高电平, 传输期间拉低) */
+			cs-gpios = <&gpiob 12 GD32_MODE_OUT_PP>,
+				   <&gpiob 1  GD32_MODE_OUT_PP>;
+
+			/* 回环测试从机: CS=PB12, 配合 MOSI->MISO 跳线自发自收 */
+			spidev0: spidev0@0 {
+				status = "okay";
+				reg = <0>;
+				compatible = "gd,spi-loopback";
+			};
+
+			/* 一主多从示例: 第二个从机挂同一总线, 用 cs-gpios[1]=PB1 片选
+			spidev1: spidev1@1 {
+				status = "okay";
+				reg = <1>;
+			}; */
+		};
+	};
 };

@@ -134,7 +134,6 @@ class CyberHand:
         self.cur = self._read_all()
         self.tgt = dict(self.cur)
         self.t_src, self.lat = None, 0.0     # t_src=当前目标来源帧的抓取时刻; lat=抓图->实发耗时(平滑值)
-        print(f"[hand] 已连接 {port}, 当前位置 {self.cur}", flush=True)
     def _read_all(self):
         cur = {}
         for sid in sorted(SAFE_RANGE):
@@ -164,9 +163,10 @@ class CyberHand:
             moved = True
         if moved:
             self.ser.write(sync_write_frame(self.cur))
-            if self.t_src is not None:                   # 抓图->串口实发的端到端耗时(轻平滑)
+            if self.t_src is not None:                   # 只测决策后第一次实发(反应时间), 追动不重复计
                 dt = time.time() - self.t_src
                 self.lat = dt if self.lat <= 0 else self.lat * 0.7 + dt * 0.3
+                self.t_src = None                        # 一次性: 用后作废, 下次set_target再武装
             if self.ser.in_waiting:
                 self.ser.reset_input_buffer()
     def move_to_init(self, timeout=3.5):
@@ -193,7 +193,6 @@ def build(delegate):
 landmarker = None
 try:
     landmarker = build(mp.tasks.BaseOptions.Delegate.GPU)
-    print("[infer] GPU", flush=True)
 except Exception as e:
     print("[infer] GPU初始化失败, 回退CPU. 原因:", str(e)[:120], flush=True)
     landmarker = build(mp.tasks.BaseOptions.Delegate.CPU)
@@ -208,7 +207,7 @@ if len(sys.argv) > 1:
         print("[error] 确认灵巧手已上电、USB线已插, 设备节点存在: ls /dev/ttyACM*")
         sys.exit(1)
 else:
-    print("[dry-run] 未接灵巧手, 只识别显示. 控制模式: python fixed_gesture.py /dev/ttyACM0", flush=True)
+    pass                                  # dry-run: 只识别显示, 命令行加串口参数即控制模式
 
 cap = cv2.VideoCapture("/dev/video11", cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"NV12"))
@@ -285,7 +284,6 @@ def draw_buttons(img):
 CONNS = [(0,1),(1,2),(2,3),(3,4),(0,5),(5,6),(6,7),(7,8),(5,9),(9,10),(10,11),
          (11,12),(9,13),(13,14),(14,15),(15,16),(13,17),(17,18),(18,19),(19,20),(0,17)]
 if hand is not None:
-    print("[hand] 开局回准备姿势(手掌)...", flush=True)
     hand.move_to_init()
 
 ts, fps, n, t_last = 0, 0.0, 0, time.time()
@@ -339,9 +337,6 @@ try:
                     thumb_pending = {k: pose[k] for k in (5, 6)}
                     t_thumb = time.time()
                 label = EN[g]
-                print(f"[ges] {ZH[g]} ({EN[g]}) pin3={GES_DBG['pin3']} m_r={GES_DBG['m_r']} "
-                      f"h_ir={GES_DBG['h_ir']} fold={GES_DBG['fold']} spread={GES_DBG['spread']} "
-                      f"tb={GES_DBG['tb']}", flush=True)
         else:                                  # 丢手: 计数清零, 离开1秒回准备姿势
             seen, same = None, 0
             if last_g is not None:
@@ -357,12 +352,11 @@ try:
                         thumb_pending = None
                     last_g = None
                     label = "SHOW A GESTURE"
-                    print("[ges] 手离开, 回准备姿势", flush=True)
         if hand is not None and STATE == "running" and time.time() >= next_send:
             if thumb_pending is not None:
                 if all(abs(hand.tgt[s] - hand.cur[s]) <= DEADBAND for s in (1, 2, 3, 4)) \
                         or time.time() - t_thumb > 1.2:       # 四指到位(或1.2s兜底)再压拇指
-                    hand.set_target(thumb_pending)
+                    hand.set_target(thumb_pending)   # 拇指是收尾动作, 不参与延迟统计(首发已消费t_src)
                     thumb_pending = None
             try:
                 hand.tick()
@@ -375,12 +369,11 @@ try:
             fps = fps * 0.5 + (n / (now - t_last)) * 0.5
             n, t_last = 0, now
         if now - t_report >= 5.0:
-            if hand is None:                   # dry-run: 打印观测值供调分类阈值
-                print(f"[status] {fps:.1f} fps | {label} | fold={GES_DBG['fold']} "
-                      f"spread={GES_DBG['spread']} pin3={GES_DBG['pin3']} m_r={GES_DBG['m_r']} "
-                      f"h_ir={GES_DBG['h_ir']} tb={GES_DBG['tb']}", flush=True)
+            if hand is None:                   # dry-run: 没有串口实发, 只报fps
+                print(f"[status] {fps:.1f} fps", flush=True)
             else:
-                print(f"[status] {fps:.1f} fps | {label} | 抓图->发送 {hand.lat*1000:.0f}ms | 实发 {hand.cur}", flush=True)
+                lat = f"{hand.lat*1000:.0f}ms" if hand.lat > 0 else "--ms"   # 首次实发前没有样本
+                print(f"[status] {fps:.1f} fps | 抓图->发送 {lat}", flush=True)
             t_report = now
         bw = (img.shape[0] * SW - img.shape[1] * SH) // (2 * SH)   # 补黑边到屏幕比例, 画面不变形
         if bw > 0:
@@ -407,4 +400,3 @@ finally:
         except Exception as e:
             print("[exit] 复位失败(串口已断?):", e, flush=True)
     cap.release(); cv2.destroyAllWindows()
-    print("[exit] done", flush=True)

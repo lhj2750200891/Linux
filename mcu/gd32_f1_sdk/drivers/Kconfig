@@ -81,4 +81,41 @@ config DRIVER_TIMER
 		    纯定时中断 (general_timer_* API, 模式四选一)
 		  basic_timer_callback(idx)。通用/高级定时器后续各自独立实现。
 
+config DRIVER_I2C
+	bool "GD32 I2C 主机驱动 (设备树 i2c-buses 节点)"
+	default y
+	depends on DRIVER_GPIO_GD32
+	help
+		  扫描设备树中 compatible = "gd,gd32-i2c" 的 i2c-buses 节点, 每个
+		  子节点一条 I2C 总线 (一主), 总线的子节点 = 挂载的从机设备
+		  (一主多从, 每个从机节点独立 status 开关, reg = 7 位地址)。
+		  提供 i2c_probe / i2c_write / i2c_read / i2c_write_then_read /
+		  i2c_write_reg / i2c_read_reg, 从机句柄 = 设备树生成的 DT_<名>_IDX。
+		  阻塞式轮询传输, 带 NACK/超时检测和 SCL 九脉冲总线恢复。
+		  设备树无该节点时编译为空实现, 不影响其他功能。
+
+config DRIVER_SPI
+	bool "GD32 SPI 主机驱动 (设备树 spi-buses 节点)"
+	default y
+	depends on DRIVER_GPIO_GD32
+	help
+		  扫描设备树中 compatible = "gd,gd32-spi" 的 spi-buses 节点, 每个
+		  子节点一条 SPI 总线 (一主), cs-gpios 列出软片选 GPIO, 总线的
+		  子节点 = 挂载的从机设备 (reg = cs-gpios 下标, 一主多从)。
+		  提供 spi_transfer / spi_write / spi_read / spi_write_then_read /
+		  spi_cs_set, 从机句柄 = 设备树生成的 DT_<名>_IDX。
+		  使用 PA15/PB3/PB4 引脚时自动禁 JTAG 保留 SWD。
+		  设备树无该节点时编译为空实现, 不影响其他功能。
+
+config DRIVER_OLED
+	bool "SSD1306 OLED 驱动 (I2C 从机设备)"
+	default y
+	depends on DRIVER_I2C
+	depends on DRIVER_SYSTICK
+	help
+		  SSD1306 128x64 OLED 显示驱动 (8x16 字库), 走 DRIVER_I2C 的
+		  从机句柄。应用显式调用 oled_init(DT_OLED0_IDX) 初始化,
+		  提供 oled_show_string / oled_show_num 等显示接口。
+		  OLED 未接或从机节点未挂载时初始化返回错误码, 不挂死系统。
+
 endmenu

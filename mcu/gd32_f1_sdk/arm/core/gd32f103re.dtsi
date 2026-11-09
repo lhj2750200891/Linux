@@ -68,4 +68,59 @@
 			/* m0: PC12=UART4_TX, PD2=UART4_RX (固定, 无重映射) */
 			0 &gpioc 12 &gpiod 2 0>;
 	};
+
+	/* ------------------------------------------------------------------
+	 * I2C 引脚分组: 每个条目 6 个单元 <组号 &SCL端口 SCL脚 &SDA端口 SDA脚 重映射>
+	 * SCL/SDA 由驱动配置为复用开漏 (GPIO_MODE_AF_OD), 总线需外部上拉电阻
+	 * ------------------------------------------------------------------ */
+	i2c0grp: pin-group@10 {
+		compatible = "gd,gd32-i2c-pingroup";
+		i2c-idx = <0>;
+		groups = <
+			/* m0: PB6=I2C0_SCL, PB7=I2C0_SDA (默认, 不重映射) */
+			0 &gpiob 6 &gpiob 7 0
+			/* m1: PB8=I2C0_SCL, PB9=I2C0_SDA (重映射) */
+			1 &gpiob 8 &gpiob 9 1>;
+	};
+
+	i2c1grp: pin-group@11 {
+		compatible = "gd,gd32-i2c-pingroup";
+		i2c-idx = <1>;
+		groups = <
+			/* m0: PB10=I2C1_SCL, PB11=I2C1_SDA (固定, 无重映射) */
+			0 &gpiob 10 &gpiob 11 0>;
+	};
+
+	/* ------------------------------------------------------------------
+	 * SPI 引脚分组: 每个条目 8 个单元
+	 *   <组号 &SCK端口 SCK脚 &MISO端口 MISO脚 &MOSI端口 MOSI脚 重映射>
+	 * SCK/MOSI 由驱动配置为复用推挽, MISO 浮空输入; 片选用软 CS (cs-gpios)
+	 * 注意: PA15/PB3/PB4 上电默认是 JTAG 引脚 (JTDO/NJTRST/JTDI),
+	 * 驱动用到时会自动禁 JTAG 保留 SWD (PA13/PA14 可继续调试)
+	 * ------------------------------------------------------------------ */
+	spi0grp: pin-group@20 {
+		compatible = "gd,gd32-spi-pingroup";
+		spi-idx = <0>;
+		groups = <
+			/* m0: PA5=SCK, PA6=MISO, PA7=MOSI (默认, 不重映射) */
+			0 &gpioa 5 &gpioa 6 &gpioa 7 0
+			/* m1: PB3=SCK, PB4=MISO, PB5=MOSI (重映射, PA15=NSS 不用) */
+			1 &gpiob 3 &gpiob 4 &gpiob 5 1>;
+	};
+
+	spi1grp: pin-group@21 {
+		compatible = "gd,gd32-spi-pingroup";
+		spi-idx = <1>;
+		groups = <
+			/* m0: PB13=SCK, PB14=MISO, PB15=MOSI (固定, 无重映射) */
+			0 &gpiob 13 &gpiob 14 &gpiob 15 0>;
+	};
+
+	spi2grp: pin-group@22 {
+		compatible = "gd,gd32-spi-pingroup";
+		spi-idx = <2>;
+		groups = <
+			/* m0: PB3=SCK, PB4=MISO, PB5=MOSI (固定; 与 SPI0 重映射组共用引脚, 二者只能取其一) */
+			0 &gpiob 3 &gpiob 4 &gpiob 5 0>;
+	};
 };

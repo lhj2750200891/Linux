@@ -63,6 +63,28 @@ source /home/firefly/hand_gesture/mediapipe_env/bin/activate
 
 # 下载需要的模型,传输到板子 /home/firefly/hand_gesture/demo 
 https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/latest/hand_landmarker.task
+wget https://storage.googleapis.com/mediapipe-models/gesture_recognizer/gesture_recognizer/float16/1/gesture_recognizer.task
+
+# 因为npu使用的模型是rknn,所以不能直接使用 hand_landmarker.task,使用下面的方式转换
+# 本机
+# 解压 task
+unzip hand_landmarker.task -d hand_landmarker_extracted/
+# 转 rknn,我现在的环境是在服务器中,本机没有安装
+cd /home/lhj/Linux/media/mediapipe+opencv/python/gpu/gesture_recognizer_extracted
+scp gesture_embedder.tflite canned_gesture_classifier.tflite hand_detector.tflite hand_landmarks_detector.tflite lhj@172.16.0.21:/home4/lhj
+cd /home/lhj/Linux/media/mediapipe+opencv/python/npu
+scp convert_rknn_pc.py lhj@172.16.0.21:/home4/lhj
+
+# 服务器
+cd /home4/lhj/arm64/rockchip/airockchip/rknn-toolkit2
+mv /home4/lhj/*.tflite ./
+mv /home4/lhj/convert_rknn_pc.py ./
+python3 convert_rknn_pc.py gesture_embedder.tflite
+python3 convert_rknn_pc.py canned_gesture_classifier.tflite
+python3 convert_rknn_pc.py hand_detector.tflite
+python3 convert_rknn_pc.py hand_landmarks_detector.tflite
+# 转换后的rknn模型,传输到板端,然后在python文件中调用即可
+
 ```
 
 ### 1.2 python代码框架

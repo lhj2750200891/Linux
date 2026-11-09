@@ -7,8 +7,10 @@
  */
 
 #include <dt-bindings/gpio/gd32f10x-gpio.h>
+#include <dt-bindings/i2c/gd32f10x-i2c.h>
 #include <dt-bindings/input/gd32f10x-key.h>
 #include <dt-bindings/serial/gd32f10x-uart.h>
+#include <dt-bindings/spi/gd32f10x-spi.h>
 #include <dt-bindings/timer/gd32f10x-timer.h>
 
 / {
@@ -111,6 +113,63 @@
 			compatible = "gd,gd32-uart-periph";
 			reg = <0x40005000 0x400>;
 			uart-idx = <4>;
+			#pin-group-cells = <1>;
+		};
+
+		/* ------------------------------------------------------------------
+		 * I2C 外设节点 (APB1)
+		 *
+		 * reg        : 外设基址 (I2C0=0x40005400, I2C1=0x40005800)
+		 * i2c-idx    : 驱动内索引用序号 (0=I2C0, 1=I2C1)
+		 * #pin-group-cells = <1> : 板级引用格式 <&i2cx 组号>
+		 *
+		 * 引脚分组: 见各型号级 dtsi 的 pin-group 节点 (SCL/SDA 均为
+		 * 复用开漏, 需总线上拉电阻); 也可在板级 dts 用
+		 * scl-gpios/sda-gpios 手动组合 (数据手册标了 I2Cx_SCL/SDA 的引脚)
+		 * ------------------------------------------------------------------ */
+		i2c0: i2c@40005400 {
+			compatible = "gd,gd32-i2c-periph";
+			reg = <0x40005400 0x400>;
+			i2c-idx = <0>;
+			#pin-group-cells = <1>;
+		};
+
+		i2c1: i2c@40005800 {
+			compatible = "gd,gd32-i2c-periph";
+			reg = <0x40005800 0x400>;
+			i2c-idx = <1>;
+			#pin-group-cells = <1>;
+		};
+
+		/* ------------------------------------------------------------------
+		 * SPI 外设节点 (SPI0 在 APB2, SPI1/SPI2 在 APB1)
+		 *
+		 * reg        : 外设基址 (SPI0=0x40013000, SPI1=0x40003800, SPI2=0x40003C00)
+		 * spi-idx    : 驱动内索引用序号 (0=SPI0, 1=SPI1, 2=SPI2, SPI2 仅 HD/CL 型号)
+		 * #pin-group-cells = <1> : 板级引用格式 <&spix 组号>
+		 *
+		 * 片选: 不用硬件 NSS (多数外设需要帧间抬 CS, 硬件 NSS 做不到),
+		 * 总线节点用 cs-gpios 列出软片选 GPIO, 从机节点 reg = 列表下标
+		 * (与 Linux cs-gpios + reg 语义一致)
+		 * ------------------------------------------------------------------ */
+		spi0: spi@40013000 {
+			compatible = "gd,gd32-spi-periph";
+			reg = <0x40013000 0x400>;
+			spi-idx = <0>;
+			#pin-group-cells = <1>;
+		};
+
+		spi1: spi@40003800 {
+			compatible = "gd,gd32-spi-periph";
+			reg = <0x40003800 0x400>;
+			spi-idx = <1>;
+			#pin-group-cells = <1>;
+		};
+
+		spi2: spi@40003c00 {
+			compatible = "gd,gd32-spi-periph";
+			reg = <0x40003C00 0x400>;
+			spi-idx = <2>;
 			#pin-group-cells = <1>;
 		};
 

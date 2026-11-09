@@ -37,6 +37,19 @@ count 属性为可选: 未写时按启用的子节点个数自动计数; 写了�
                       clock-hz, prescaler, period-us, irq-mode, remap;
                       通道子节点 chN: channel = <0~3>, gpios = <&gpiox 引脚 模式>,
                       duty-tenk(pwm), pwm-mode(pwm), polarity(freq)
+  gd,gd32-i2c         子节点 = I2C 总线实例 (主机)。容器属性: count;
+                      子节点: pgroup = <&i2cx 组号> (或 scl-gpios/sda-gpios 手动
+                      组合 + i2c-idx + remap), speed = <STANDARD/FAST>,
+                      own-addr;
+                      从机子节点 (仿 Linux, 一主多从): 节点名可带 @地址后缀,
+                      reg = <7位从机地址 0x08~0x77>, status, compatible(可选,
+                      生成 DT_<名>_COMPAT 字符串宏供设备驱动匹配)
+  gd,gd32-spi         子节点 = SPI 总线实例 (主机)。容器属性: count;
+                      子节点: pgroup = <&spix 组号> (或 sck/miso/mosi-gpios +
+                      spi-idx + remap), baud-hz, frame-size, cpol, cpha,
+                      first-bit, cs-gpios = <...>, <...> (软片选 GPIO 列表);
+                      从机子节点 (仿 Linux): reg = <cs-gpios 列表下标>,
+                      status, compatible
 
 外设个数(count 等)必须在设备树中描述, 本脚本校验它与实际子节点/引脚列表一致, 不一致则报错。
 
@@ -75,6 +88,10 @@ CLASS_BASIC_TIMER = 'gd,gd32-basic-timer'
 CLASS_GENERAL_TIMER = 'gd,gd32-general-timer'
 CLASS_UART_PINGROUP = 'gd,gd32-uart-pingroup'
 CLASS_UART_PERIPH = 'gd,gd32-uart-periph'
+CLASS_I2C = 'gd,gd32-i2c'
+CLASS_SPI = 'gd,gd32-spi'
+CLASS_I2C_PINGROUP = 'gd,gd32-i2c-pingroup'
+CLASS_SPI_PINGROUP = 'gd,gd32-spi-pingroup'
 
 
 class FdtError(Exception):
@@ -287,6 +304,234 @@ def emit_instances(out, macro_base, specs, levels, extras=None):
     out.append('')
 
 
+# ------------------------------------------------------------- I2C/SPI ----
+
+def slave_ident(name):
+    """从机节点名 -> C 宏标识: 去掉 Linux 风格的 @unit 后缀 (oled0@3c -> OLED0)"""
+    return sanitize(name.split('@')[0])
+
+
+def collect_pingroups(root, phandles, compat, idx_prop, entry_len, port_slots, what):
+    """解析 dtsi 中的引脚组容器 (i2c/spi 与 uart 同构, 单元数不同)。
+
+    entry_len: 每个条目的单元数 (i2c=6, spi=8)
+    port_slots: 端口 phandle 所在条目内偏移 (i2c: [1,3]; spi: [1,3,5])
+    返回 {外设序号: {组号: (端口, 引脚, ...) 元组}}, 元组末项恒为 remap。
+    """
+    table = {}
+    for node in walk(root):
+        if prop_string(node, 'compatible') != compat:
+            continue
+        idx = prop_u32(node, idx_prop)
+        cells = prop_u32_list(node, 'groups')
+        if len(cells) % entry_len:
+            raise FdtError('节点 %s: groups 属性单元数不是 %d 的倍数'
+                           % (node.path(), entry_len))
+        entry = {}
+        for i in range(0, len(cells), entry_len):
+            chunk = cells[i:i + entry_len]
+            grp = chunk[0]
+            pins = []
+            for slot in port_slots:
+                port_node = phandles.get(chunk[slot])
+                if port_node is None:
+                    raise FdtError('节点 %s: groups 中的 phandle 无法解析' % node.path())
+                pins.append(prop_u32(port_node, 'port-idx'))
+                pins.append(chunk[slot + 1])
+            remap = chunk[entry_len - 1] & 0x01
+            entry[grp & 0xFF] = tuple(pins) + (remap,)
+        table[idx] = entry
+    return table
+
+
+I2C_PERIPH_MACRO = {0: 'I2C0', 1: 'I2C1'}
+SPI_PERIPH_MACRO = {0: 'SPI0', 1: 'SPI1', 2: 'SPI2'}
+
+
+class I2cInstance(object):
+    """设备树 i2c 总线子节点解析结果 (字段与 struct gd32_i2c_cfg 一一对应)"""
+
+    def __init__(self):
+        self.periph = 'I2C0'
+        self.i2c_idx = 0
+        self.scl_port = 0
+        self.scl_pin = 0
+        self.sda_port = 0
+        self.sda_pin = 0
+        self.remap = 0
+        self.speed = 0
+        self.own_addr = 0
+
+    def emit_line(self):
+        return ('{ .periph = %s, .i2c_idx = %u, '
+                '.scl_port = %u, .scl_pin = %u, .sda_port = %u, .sda_pin = %u, '
+                '.remap = %u, .speed = %u, .own_addr = %u }'
+                % (self.periph, self.i2c_idx, self.scl_port, self.scl_pin,
+                   self.sda_port, self.sda_pin, self.remap, self.speed,
+                   self.own_addr))
+
+
+def i2c_parse_instance(node, root, phandles, pingroups):
+    """解析一个 i2c 总线子节点 (i2c-buses 容器的直接子节点)。
+
+    引脚两种写法 (二选一, 都写以 pgroup 为准):
+      pgroup = <&i2c0grp 0>            预定义引脚组 (dtsi 中的 pin-group 节点)
+      scl-gpios/sda-gpios 手动组合     需同时给出 i2c-idx (标明 I2C0/I2C1)
+    """
+    inst = I2cInstance()
+
+    if 'pgroup' in node.props:
+        cells = prop_u32_list(node, 'pgroup')
+        if len(cells) != 2:
+            raise FdtError('节点 %s: pgroup 应为 <&i2cx 组号> 两个单元' % node.path())
+        grp_node = phandles.get(cells[0])
+        if grp_node is None:
+            raise FdtError('节点 %s: pgroup 引用无法解析' % node.path())
+        grp = cells[1] & 0xFF
+        inst.i2c_idx = prop_u32(grp_node, 'i2c-idx')
+        table = pingroups.get(inst.i2c_idx)
+        if table is None or grp not in table:
+            raise FdtError('节点 %s: I2C%d 的引脚组 %d 不存在 (检查 dtsi pin-group 节点)'
+                           % (node.path(), inst.i2c_idx, grp))
+        inst.scl_port, inst.scl_pin, inst.sda_port, inst.sda_pin, inst.remap = table[grp]
+    elif 'scl-gpios' in node.props and 'sda-gpios' in node.props:
+        if 'i2c-idx' not in node.props:
+            raise FdtError('节点 %s: 手动组合引脚时必须提供 i2c-idx 属性'
+                           % node.path())
+        inst.i2c_idx = prop_u32(node, 'i2c-idx')
+        scl = parse_gpio_specs(node, 'scl-gpios', root, phandles)
+        sda = parse_gpio_specs(node, 'sda-gpios', root, phandles)
+        if len(scl) != 1 or len(sda) != 1:
+            raise FdtError('节点 %s: scl-gpios/sda-gpios 应各只有一组引脚' % node.path())
+        inst.scl_port, inst.scl_pin = scl[0][0], scl[0][1]
+        inst.sda_port, inst.sda_pin = sda[0][0], sda[0][1]
+        inst.remap = prop_u32(node, 'remap', 0)
+    else:
+        raise FdtError('节点 %s: 缺少引脚描述 (pgroup 或 scl-gpios+sda-gpios 二选一)'
+                       % node.path())
+
+    if inst.i2c_idx not in I2C_PERIPH_MACRO:
+        raise FdtError('节点 %s: i2c-idx %d 超出范围 (0~1)' % (node.path(), inst.i2c_idx))
+    inst.periph = I2C_PERIPH_MACRO[inst.i2c_idx]
+    if inst.remap and inst.i2c_idx != 0:
+        raise FdtError('节点 %s: 仅 I2C0 有重映射引脚 (PB8/PB9)' % node.path())
+
+    inst.speed = prop_u32(node, 'speed', 0)           # GD32_I2C_SPEED_STANDARD/FAST
+    if inst.speed not in (0, 1):
+        raise FdtError('节点 %s: speed 应为 GD32_I2C_SPEED_STANDARD(0)/FAST(1)'
+                       % node.path())
+    inst.own_addr = prop_u32(node, 'own-addr', 0)     # 本机地址 (主机模式不用)
+    if inst.own_addr > 0x7F:
+        raise FdtError('节点 %s: own-addr 0x%X 超出 7 位地址范围' % (node.path(), inst.own_addr))
+    return inst
+
+
+class SpiInstance(object):
+    """设备树 spi 总线子节点解析结果 (字段与 struct gd32_spi_cfg 一一对应)"""
+
+    def __init__(self):
+        self.periph = 'SPI0'
+        self.spi_idx = 0
+        self.sck_port = 0
+        self.sck_pin = 0
+        self.miso_port = 0
+        self.miso_pin = 0
+        self.mosi_port = 0
+        self.mosi_pin = 0
+        self.remap = 0
+        self.frame16 = 0
+        self.cpol = 0
+        self.cpha = 0
+        self.lsb_first = 0
+        self.baud_hz = 1000000
+
+    def emit_line(self):
+        return ('{ .periph = %s, .spi_idx = %u, '
+                '.sck_port = %u, .sck_pin = %u, .miso_port = %u, .miso_pin = %u, '
+                '.mosi_port = %u, .mosi_pin = %u, .remap = %u, .frame16 = %u, '
+                '.cpol = %u, .cpha = %u, .lsb_first = %u, .baud_hz = %u }'
+                % (self.periph, self.spi_idx, self.sck_port, self.sck_pin,
+                   self.miso_port, self.miso_pin, self.mosi_port, self.mosi_pin,
+                   self.remap, self.frame16, self.cpol, self.cpha,
+                   self.lsb_first, self.baud_hz))
+
+
+def spi_parse_instance(node, root, phandles, pingroups):
+    """解析一个 spi 总线子节点 (spi-buses 容器的直接子节点)。引脚写法同 i2c。"""
+    inst = SpiInstance()
+
+    if 'pgroup' in node.props:
+        cells = prop_u32_list(node, 'pgroup')
+        if len(cells) != 2:
+            raise FdtError('节点 %s: pgroup 应为 <&spix 组号> 两个单元' % node.path())
+        grp_node = phandles.get(cells[0])
+        if grp_node is None:
+            raise FdtError('节点 %s: pgroup 引用无法解析' % node.path())
+        grp = cells[1] & 0xFF
+        inst.spi_idx = prop_u32(grp_node, 'spi-idx')
+        table = pingroups.get(inst.spi_idx)
+        if table is None or grp not in table:
+            raise FdtError('节点 %s: SPI%d 的引脚组 %d 不存在 (检查 dtsi pin-group 节点)'
+                           % (node.path(), inst.spi_idx, grp))
+        (inst.sck_port, inst.sck_pin, inst.miso_port, inst.miso_pin,
+         inst.mosi_port, inst.mosi_pin, inst.remap) = table[grp]
+    elif ('sck-gpios' in node.props and 'miso-gpios' in node.props
+          and 'mosi-gpios' in node.props):
+        if 'spi-idx' not in node.props:
+            raise FdtError('节点 %s: 手动组合引脚时必须提供 spi-idx 属性'
+                           % node.path())
+        inst.spi_idx = prop_u32(node, 'spi-idx')
+        sck = parse_gpio_specs(node, 'sck-gpios', root, phandles)
+        miso = parse_gpio_specs(node, 'miso-gpios', root, phandles)
+        mosi = parse_gpio_specs(node, 'mosi-gpios', root, phandles)
+        if len(sck) != 1 or len(miso) != 1 or len(mosi) != 1:
+            raise FdtError('节点 %s: sck/miso/mosi-gpios 应各只有一组引脚' % node.path())
+        inst.sck_port, inst.sck_pin = sck[0][0], sck[0][1]
+        inst.miso_port, inst.miso_pin = miso[0][0], miso[0][1]
+        inst.mosi_port, inst.mosi_pin = mosi[0][0], mosi[0][1]
+        inst.remap = prop_u32(node, 'remap', 0)
+    else:
+        raise FdtError('节点 %s: 缺少引脚描述 (pgroup 或 sck+miso+mosi-gpios 二选一)'
+                       % node.path())
+
+    if inst.spi_idx not in SPI_PERIPH_MACRO:
+        raise FdtError('节点 %s: spi-idx %d 超出范围 (0~2)' % (node.path(), inst.spi_idx))
+    inst.periph = SPI_PERIPH_MACRO[inst.spi_idx]
+    if inst.remap and inst.spi_idx != 0:
+        raise FdtError('节点 %s: 仅 SPI0 有重映射引脚 (PB3/PB4/PB5)' % node.path())
+
+    inst.frame16 = prop_u32(node, 'frame-size', 0)    # GD32_SPI_FRAME_x
+    if inst.frame16 not in (0, 1):
+        raise FdtError('节点 %s: frame-size 应为 GD32_SPI_FRAME_8BIT(0)/16BIT(1)'
+                       % node.path())
+    inst.cpol = prop_u32(node, 'cpol', 0)             # GD32_SPI_CPOL_x
+    inst.cpha = prop_u32(node, 'cpha', 0)             # GD32_SPI_CPHA_x
+    inst.lsb_first = prop_u32(node, 'first-bit', 0)   # GD32_SPI_FIRST_x
+    for name, val in (('cpol', inst.cpol), ('cpha', inst.cpha),
+                      ('first-bit', inst.lsb_first)):
+        if val not in (0, 1):
+            raise FdtError('节点 %s: %s 应为 0/1 (见 dt-bindings/spi/gd32f10x-spi.h)'
+                           % (node.path(), name))
+    inst.baud_hz = prop_u32(node, 'baud-hz', 1000000)
+    if inst.baud_hz < 1000 or inst.baud_hz > 50000000:
+        raise FdtError('节点 %s: baud-hz %d 不合理 (1k ~ 50M)' % (node.path(), inst.baud_hz))
+    return inst
+
+
+def emit_slave_macros(out, used_macros, ident, sidx, fields, compat):
+    """生成单个从机的 DT_<名>_IDX/_BUS/... 宏, 校验重名"""
+    for macro in ('DT_%s_IDX' % ident,) + tuple('DT_%s_%s' % (ident, k.upper())
+                                                for k in fields):
+        if macro in used_macros:
+            raise FdtError('重复的从机/实例名: %s' % ident)
+        used_macros.add(macro)
+    out.append('#define DT_%s_IDX %d' % (ident, sidx))
+    for key, val in fields.items():
+        out.append('#define DT_%s_%s %s' % (ident, key.upper(), val))
+    if compat:
+        out.append('#define DT_%s_COMPAT "%s"' % (ident, compat))
+
+
 # ---------------------------------------------------------------- UART ----
 
 def collect_uart_pingroups(root, phandles):
@@ -449,6 +694,10 @@ def generate(root, src_note):
     present = set()          # 设备树中实际出现的容器 (宏基名)
     phandles = build_phandle_map(root)
     pingroups = collect_uart_pingroups(root, phandles)
+    i2c_pingroups = collect_pingroups(root, phandles, CLASS_I2C_PINGROUP,
+                                      'i2c-idx', 6, (1, 3), 'i2c')
+    spi_pingroups = collect_pingroups(root, phandles, CLASS_SPI_PINGROUP,
+                                      'spi-idx', 8, (1, 3, 5), 'spi')
     stats = []
 
     for node in walk(root):
@@ -462,7 +711,8 @@ def generate(root, src_note):
                            % (node.path(), st))
         if st == 'disabled':
             if compat in (CLASS_LED, CLASS_KEY, CLASS_MATRIX, CLASS_SYSTICK,
-                      CLASS_UART, CLASS_BASIC_TIMER, CLASS_GENERAL_TIMER):
+                      CLASS_UART, CLASS_BASIC_TIMER, CLASS_GENERAL_TIMER,
+                      CLASS_I2C, CLASS_SPI):
                 stats.append((node.name, compat + ' [disabled]', 0))
             continue
 
@@ -771,6 +1021,160 @@ def generate(root, src_note):
             emit_idx_macros(out, node, used_macros, idents, dis)
             out.append('')
             stats.append((node.name, compat, len(inst_lines)))
+        elif compat == CLASS_I2C:
+            # I2C 总线 (仿 Linux i2c 子系统): 实例 = 每个子节点一条总线(主机),
+            # 总线子节点的子节点 = 挂载的从机设备 (一主多从 = 多个从机子节点):
+            #   从机节点名可带 @地址后缀 (oled0@3c), reg = <7位地址 0x08~0x77>,
+            #   每个从机独立 status 开关。
+            # 生成:
+            #   DT_<容器名>_COUNT/_INSTANCES          总线实例表 (gd32_i2c_cfg)
+            #   DT_<总线名>_IDX                       总线实例下标 (disabled -> 哨兵)
+            #   DT_I2C_SLAVES_COUNT / DT_I2C_SLAVES   启用从机扁平表 (gd32_i2c_slave)
+            #   DT_<从机名>_IDX/_BUS/_ADDR/_COMPAT    从机句柄宏
+            base = sanitize(node.name)
+            if base in present:
+                raise FdtError('重复的总线容器节点名: %s' % node.name)
+            present.add(base)
+            count = prop_u32(node, 'count') if 'count' in node.props else None
+            idents, inst_lines, dis = [], [], []
+            slave_lines = []
+            seen_hw = {}
+            for child in node.children:
+                if not child_enabled(child):
+                    dis.append(child.name)
+                    continue
+                inst = i2c_parse_instance(child, root, phandles, i2c_pingroups)
+                if inst.i2c_idx in seen_hw:
+                    raise FdtError('节点 %s: I2C%d 已由节点 %s 使用, 一条硬件总线只能一个实例'
+                                   % (child.path(), inst.i2c_idx, seen_hw[inst.i2c_idx]))
+                seen_hw[inst.i2c_idx] = child.name
+                bus_idx = len(inst_lines)
+                idents.append(child.name)
+                inst_lines.append(inst.emit_line())
+                # ---- 挂载的从机设备 ----
+                for sc in child.children:
+                    ident = slave_ident(sc.name)
+                    if not child_enabled(sc):
+                        # 禁用的从机: 哨兵下标, 应用引用处无需修改
+                        if 'DT_%s_IDX' % ident in used_macros:
+                            raise FdtError('重复的从机名: %s' % ident)
+                        used_macros.add('DT_%s_IDX' % ident)
+                        out.append('#define DT_%s_IDX DT_IDX_DISABLED   /* status=\\"disabled\\" 从机, API 安全空操作 */'
+                                   % ident)
+                        continue
+                    addr_cells = prop_u32_list(sc, 'reg')
+                    if len(addr_cells) != 1:
+                        raise FdtError('节点 %s: 从机 reg 应为 <7位地址> 一个单元' % sc.path())
+                    addr = addr_cells[0]
+                    if addr < 0x08 or addr > 0x77:
+                        raise FdtError('节点 %s: 从机地址 0x%02X 超出 0x08~0x77'
+                                       % (sc.path(), addr))
+                    emit_slave_macros(out, used_macros, ident, len(slave_lines),
+                                      {'bus': bus_idx, 'addr': '0x%02X' % addr},
+                                      prop_string(sc, 'compatible', ''))
+                    slave_lines.append('{ .bus = %u, .addr = 0x%02X }' % (bus_idx, addr))
+            check_count(node, 'count', count, len(inst_lines))
+            out.append('#define DT_%s_COUNT %d' % (base, len(inst_lines)))
+            if inst_lines:
+                out.append('#define DT_%s_INSTANCES \\' % base)
+                for i, line in enumerate(inst_lines):
+                    if i != len(inst_lines) - 1:
+                        line += ', \\'
+                    out.append('\t' + line)
+                out.append('')
+            out.append('#define DT_I2C_SLAVES_COUNT %d' % len(slave_lines))
+            if slave_lines:
+                out.append('#define DT_I2C_SLAVES \\')
+                for i, line in enumerate(slave_lines):
+                    if i != len(slave_lines) - 1:
+                        line += ', \\'
+                    out.append('\t' + line)
+                out.append('')
+            emit_idx_macros(out, node, used_macros, idents, dis)
+            out.append('')
+            stats.append((node.name, compat, len(inst_lines)))
+        elif compat == CLASS_SPI:
+            # SPI 总线 (仿 Linux spi 子系统): 实例 = 每个子节点一条总线(主机)。
+            # 片选不用硬件 NSS: 总线节点 cs-gpios 列出软片选 GPIO, 从机节点
+            # reg = <cs-gpios 列表下标>; 一主多从 = 多个从机子节点共用总线。
+            # 生成:
+            #   DT_<容器名>_COUNT/_INSTANCES          总线实例表 (gd32_spi_cfg)
+            #   DT_<总线名>_IDX                       总线实例下标 (disabled -> 哨兵)
+            #   DT_SPI_SLAVES_COUNT / DT_SPI_SLAVES   启用从机扁平表 (gd32_spi_slave)
+            #   DT_<从机名>_IDX/_BUS/_CS/_COMPAT      从机句柄宏
+            base = sanitize(node.name)
+            if base in present:
+                raise FdtError('重复的总线容器节点名: %s' % node.name)
+            present.add(base)
+            count = prop_u32(node, 'count') if 'count' in node.props else None
+            idents, inst_lines, dis = [], [], []
+            slave_lines = []
+            seen_hw = {}
+            for child in node.children:
+                if not child_enabled(child):
+                    dis.append(child.name)
+                    continue
+                inst = spi_parse_instance(child, root, phandles, spi_pingroups)
+                if inst.spi_idx in seen_hw:
+                    raise FdtError('节点 %s: SPI%d 已由节点 %s 使用, 一条硬件总线只能一个实例'
+                                   % (child.path(), inst.spi_idx, seen_hw[inst.spi_idx]))
+                seen_hw[inst.spi_idx] = child.name
+                bus_idx = len(inst_lines)
+                idents.append(child.name)
+                inst_lines.append(inst.emit_line())
+                # ---- 软片选 GPIO 列表 + 挂载的从机设备 ----
+                cs_gpios = parse_gpio_specs(child, 'cs-gpios', root, phandles) \
+                    if 'cs-gpios' in child.props else []
+                for sc in child.children:
+                    ident = slave_ident(sc.name)
+                    if not child_enabled(sc):
+                        if 'DT_%s_IDX' % ident in used_macros:
+                            raise FdtError('重复的从机名: %s' % ident)
+                        used_macros.add('DT_%s_IDX' % ident)
+                        out.append('#define DT_%s_IDX DT_IDX_DISABLED   /* status=\\"disabled\\" 从机, API 安全空操作 */'
+                                   % ident)
+                        continue
+                    cs_idx = prop_u32(sc, 'reg', 0)       # reg = cs-gpios 下标 (缺省 0)
+                    if not cs_gpios:
+                        # 总线无 cs-gpios: 无软片选 (外部电路自控), cs=0xFF
+                        fields = {'bus': bus_idx, 'cs': '0xFF'}
+                        emit_slave_macros(out, used_macros, ident, len(slave_lines),
+                                          fields, prop_string(sc, 'compatible', ''))
+                        slave_lines.append('{ .bus = %u, .cs = 0xFF, .cs_port = 0, '
+                                           '.cs_pin = 0, .cs_mode = 0x00 }' % bus_idx)
+                    else:
+                        if cs_idx >= len(cs_gpios):
+                            raise FdtError('节点 %s: reg=%d 超出 cs-gpios 列表长度 %d'
+                                           % (sc.path(), cs_idx, len(cs_gpios)))
+                        cs_port, cs_pin, cs_mode = cs_gpios[cs_idx]
+                        fields = {'bus': bus_idx, 'cs': cs_idx,
+                                  'cs_port': cs_port, 'cs_pin': cs_pin,
+                                  'cs_mode': '0x%02X' % cs_mode}
+                        emit_slave_macros(out, used_macros, ident, len(slave_lines),
+                                          fields, prop_string(sc, 'compatible', ''))
+                        slave_lines.append('{ .bus = %u, .cs = %u, .cs_port = %u, '
+                                           '.cs_pin = %u, .cs_mode = 0x%02X }'
+                                           % (bus_idx, cs_idx, cs_port, cs_pin, cs_mode))
+            check_count(node, 'count', count, len(inst_lines))
+            out.append('#define DT_%s_COUNT %d' % (base, len(inst_lines)))
+            if inst_lines:
+                out.append('#define DT_%s_INSTANCES \\' % base)
+                for i, line in enumerate(inst_lines):
+                    if i != len(inst_lines) - 1:
+                        line += ', \\'
+                    out.append('\t' + line)
+                out.append('')
+            out.append('#define DT_SPI_SLAVES_COUNT %d' % len(slave_lines))
+            if slave_lines:
+                out.append('#define DT_SPI_SLAVES \\')
+                for i, line in enumerate(slave_lines):
+                    if i != len(slave_lines) - 1:
+                        line += ', \\'
+                    out.append('\t' + line)
+                out.append('')
+            emit_idx_macros(out, node, used_macros, idents, dis)
+            out.append('')
+            stats.append((node.name, compat, len(inst_lines)))
 
     # 兜底: 某类容器节点在设备树中不存在(或 status="disabled")时补 0 宏,
     # 驱动侧 #if DT_xxx_COUNT > 0 会走空实现, "驱动开了但板上没这硬件"也能编译
@@ -787,6 +1191,14 @@ def generate(root, src_note):
         out.append('')
     if 'GENERAL_TIMERS' not in present:
         out.append('#define DT_GENERAL_TIMERS_COUNT 0')
+        out.append('')
+    if 'I2C_BUSES' not in present:
+        out.append('#define DT_I2C_BUSES_COUNT 0')
+        out.append('#define DT_I2C_SLAVES_COUNT 0')
+        out.append('')
+    if 'SPI_BUSES' not in present:
+        out.append('#define DT_SPI_BUSES_COUNT 0')
+        out.append('#define DT_SPI_SLAVES_COUNT 0')
         out.append('')
     if 'SYSTICK' not in present:
         out.append('#define DT_SYSTICK_CLOCK_FREQUENCY 0')

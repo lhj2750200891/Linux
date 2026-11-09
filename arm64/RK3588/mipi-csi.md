@@ -205,6 +205,22 @@ IMX415 模组 (CMK-OT2022-PX1, 8M):
 };
 ```
 
+```
+# imx415 修改默认的30fps为60fps
+cd /media/lhj/data/t-chip/7.code/arm64/rockchip/rk3588_6.12.69_sdk/kernel-6.12
+vim drivers/media/i2c/imx415.c   
+# 找到 .reg_list = imx415_linear_12bit_1932x1096_594M_regs,
+.vts_def 的 0x0c5d 改为 0x52e
+.denominator 的 300000 改为 600000
+.exp_def 的 0x0c5d 改为 0x317
+
+# 找到 imx415_linear_12bit_1932x1096_594M_regs[]
+0x3024 的值从0x5D改为0x2E
+0x3024 的值从0x0C改为0x06
+```
+
+
+
 ### 2.3 关键属性说明
 
 | 属性 | 说明 |

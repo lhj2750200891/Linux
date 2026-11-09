@@ -107,7 +107,6 @@ class CyberHand:
         self.cur = self._read_all()          # 从真实位置出发
         self.tgt = dict(self.cur)
         self.t_src, self.lat = None, 0.0     # t_src=当前目标来源帧的抓取时刻; lat=抓图->实发耗时(平滑值)
-        print(f"[hand] 已连接 {port}, 当前位置 {self.cur}", flush=True)
     def _read_all(self):
         cur = {}
         for sid in sorted(SAFE_RANGE):       # 逐个读真实位置, 失败用初始位兜底
@@ -120,9 +119,7 @@ class CyberHand:
                     if self.ser.in_waiting >= 8:
                         pos = parse_position(self.ser.read(8))
                         break
-                cur[sid] = pos if pos else POSE_INIT[sid]
-                if not pos:
-                    print(f"[hand] 舵机{sid}读位超时, 用初始位兜底", flush=True)
+                cur[sid] = pos if pos else POSE_INIT[sid]   # 读位超时静默用初始位兜底
             except Exception:
                 cur[sid] = POSE_INIT[sid]
         return cur
@@ -142,9 +139,10 @@ class CyberHand:
             moved = True
         if moved:
             self.ser.write(sync_write_frame(self.cur))   # 同步写广播无应答
-            if self.t_src is not None:                   # 抓图->串口实发的端到端耗时(轻平滑)
+            if self.t_src is not None:                   # 只测决策后第一次实发(反应时间), 追动不重复计
                 dt = time.time() - self.t_src
                 self.lat = dt if self.lat <= 0 else self.lat * 0.7 + dt * 0.3
+                self.t_src = None                        # 一次性: 用后作废, 下次set_target再武装
             if self.ser.in_waiting:
                 self.ser.reset_input_buffer()            # 清理杂散字节防缓冲膨胀
     def move_to_init(self, timeout=2.0):
@@ -162,7 +160,6 @@ try:
     from hand_npu import HandNPU
     landmarker = HandNPU(os.path.join(_DIR, "palm_detection.rknn"),
                          os.path.join(_DIR, "hand_landmark.rknn"))
-    print("[infer] NPU(RKNN): palm_detection + hand_landmark", flush=True)
 except Exception as e:
     print("[infer] NPU初始化失败:", str(e)[:200], flush=True)
     print("检查: 1)板子已 pip3 install rknn-toolkit-lite2  2)/usr/lib/librknnrt.so 存在  "
@@ -179,7 +176,7 @@ if len(sys.argv) > 1:
         print("[error] 确认灵巧手已上电、USB线已插, 设备节点存在: ls /dev/ttyACM*")
         sys.exit(1)
 else:
-    print("[dry-run] 未接灵巧手, 只显示映射位置. 控制模式: python hand_control_npu.py /dev/ttyACM0", flush=True)
+    pass                                  # dry-run: 只显示映射位置, 命令行加串口参数即控制模式
 
 cap = cv2.VideoCapture("/dev/video11", cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"NV12"))
@@ -298,10 +295,11 @@ try:
             fps = fps * 0.5 + (n / (now - t_last)) * 0.5
             n, t_last = 0, now
         if now - t_report >= 5.0:
-            if hand is None:
-                print(f"[status] {fps:.1f} fps | fold={THUMB_RAW['fold']} spread={THUMB_RAW['spread']} | 映射位置 {pos if pos else '无手'}", flush=True)
+            if hand is None:                   # dry-run: 没有串口实发, 只报fps
+                print(f"[status] {fps:.1f} fps", flush=True)
             else:
-                print(f"[status] {fps:.1f} fps | 抓图->发送 {hand.lat*1000:.0f}ms | 实发 {hand.cur}", flush=True)
+                lat = f"{hand.lat*1000:.0f}ms" if hand.lat > 0 else "--ms"   # 首次实发前没有样本
+                print(f"[status] {fps:.1f} fps | 抓图->发送 {lat}", flush=True)
             t_report = now
         bw = (img.shape[0] * SW - img.shape[1] * SH) // (2 * SH)   # 补黑边到屏幕比例, 画面不变形
         if bw > 0:
@@ -324,4 +322,3 @@ finally:
         except Exception as e:
             print("[exit] 复位失败(串口已断?):", e, flush=True)
     cap.release(); cv2.destroyAllWindows()
-    print("[exit] done", flush=True)
