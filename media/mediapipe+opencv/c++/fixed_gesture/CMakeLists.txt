@@ -1,0 +1,2 @@
+add_executable(fixed_gesture main.cpp)
+target_link_libraries(fixed_gesture hand_infer hand_common)
