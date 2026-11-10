@@ -1,35 +1,4 @@
-# LGA-3588L-MINI 后摩 LLM 部署指南(从无驱动到 llama-server 运行)
-
-　　2026-11-10 依据对 172.16.11.216(工程师已搭好的验证板)网络 adb 全链路逆向整理。
-所有路径、版本、输出均为该板**实测**;标注 **[推断]** 的为合理推断、未在本板直接观察到执行过程。
-目标:在下一块新板上照此从零部署并验证 Qwen3.6-35B 推理服务。
-
-## 0. 架构总览
-
-```
-后摩 LLM 推理链(2026-11-10 实测 ldd 全链,不含任何 rknn 组件):
-应用层      llama-server(后摩魔改 llama.cpp,OpenAI API :8081)
-  模型      HiModel gguf(Qwen3.6-35B-A3B,W5A8 量化,256k ctx,按 2 芯片切分)
-LLM 运行时  houmo-HLIELLama-xh2 2.2.2(bin/lib)
-芯片接入    libtcim_runtime_lite / libtcimblas(tcim 1.4.0 用户态库)
-内核驱动    xh2a_drv v1.5.0(DKMS 编译,源码 /usr/src/xh2_driver-v1.5.0,PCIe 主机驱动)
-系统层      Ubuntu 24.04.5 + 内核 6.12.81(SDK kernel-6.12) + 版本精确匹配的 headers
-硬件        RK3588L SoC + 2×RK182X 存算一体芯片,各走一条 PCIe
-            (dmesg: houmo,xh2a 0000:01:00.0 与 0001:11:00.0;PCIe 8.0 GT/s x2lane)
-
-另一条平行通路(与后摩 LLM 无关,勿混淆,2026-11-10 修正):
-rknn3 栈    rknn3-rk182x-m2 deb 1.1.0a:rknn-smi/rknn3_* 工具、rknn3_transfer_proxy:18898、
-            固件 rknn3_rk1820.img + pcie-rkep 驱动(本板 ko 与 /dev/pcie-rkep-* 均不存在,空转)
-```
-
-自启动链(本板实况):
-
-```
-rc-local.service → /etc/rc.local → (后台) /usr/local/bin/firefly-hm-test.sh
-  ├─ 所有 CPU governor 写 performance
-  ├─ taskset -c 4-7 ./bin/llama-server -m <模型> --port 8081 --device 0,1 &
-  └─ 死循环每 3s curl 一次本机压测(刷屏源头,可去掉)
-```
+# LGA-3588L-MINI 后摩 LLM 部署指南
 
 ## 1. 物料清单
 
@@ -39,7 +8,7 @@ rc-local.service → /etc/rc.local → (后台) /usr/local/bin/firefly-hm-test.s
 |---|------|-------------|------|
 | 1 | 基础镜像(Ubuntu24.04 + 内核 6.12.81 + headers) | /boot/linux-headers-6.12-arm64_arm64.deb(6.12-rockchip) | 跑系统 + 供 DKMS 编译 |
 | 2 | houmo-drv-xh2_v1.5.0_linux_aarch64.run | /root/ | 驱动安装器(dkms+服务+modprobe 一条龙) |
-| 3 | rknn3-rk182x-m2_1.1.0a_arm64.deb(**可选**) | 板上已装,原始 deb 未留档 | rknn 模型通路运行时 + 工具(rknn-smi 出自这里);**后摩 LLM 不需要** |
+| 3 | **不需要,不要装**                                      | 板上残留属镜像/QA 环境 | rknn 模型通路(rk1828 方向),与后摩毫无关系 |
 | 4 | houmo-HLIELLama-xh2_2.2.2_linux_aarch64.tar.gz | /home/firefly/ | LLM 运行时(llama-server/llama-cli/llama-bench/ollama) |
 | 5 | 模型 gguf(30G) | /home/firefly/houmo-HLIELLama-xh2/models/ | HiModel_xh2_qwen3.6-35b-a3b_w5a8_256_256k_b1_2chips_2cores_v1.5.0_20260824.gguf |
 | 6 | M50_DM2_fw-xh2_v1.5.0.tar.gz | /root/ | 芯片侧固件升级包 [推断:pcie_upgrade_tool 用;rknn-smi 显示 HMSW V1.5.0 即已配套,无需动] |
@@ -114,45 +83,34 @@ xh2a_ctl_ctc_check_linkup: check dev_id=1 ... fail_info=0x10000
 
 注:`check_linkup` 行带 fail_info 数值属正常流程打印,本板 device1 显示 0x10000 但功能完好。
 
-芯片状态快照:
+芯片状态快照(用 HM 自带 `hm_smi`,在 /usr/local/bin,推断随驱动安装器带入;本板 save.txt 即其输出):
 
 ```bash
-rknn-smi
+hm_smi
 # 期望(对照本板 /home/firefly/save.txt):HMSW_Version V1.5.0;device0/1 两颗;
 # PCIe 8.0 GT/s x2lane;DVFS_Mode performance;Cur_Ipu_Freq 1300.0 MHz
 ```
+
+同目录 `hm_upgrade_cli` / `hm_upgrade_gui`:芯片固件升级工具,配 M50_DM2_fw 包用 [推断]。
 
 坑:
 
 - 换/升内核后开机 dkms_xh2a.service 会自动重编,但前提是**新内核 headers 已先装好**
 - 本板 /usr/src 残留两个版本 headers(g6d79b… 与旧 ga3517…)= 换过一次内核,属正常痕迹
 
-## 4. 阶段三(可选):rknn3 运行时 —— 与后摩 LLM 无关
+## 4. 阶段三:没有这一步 —— rknn3 与后摩毫无关系,不要装
 
-> **2026-11-10 修正**:初版误把 rknn3 当作后摩栈必需层。实测澄清:
-> - llama-server 及 libtcim_\* 全链 ldd,**无任何 librknn3 依赖**;
-> - rknn3_startup 走的是 **pcie-rkep 驱动 + rknn3_rk1820.img**(rknn 模型通路),
->   本板 pcie-rkep.ko 与 /dev/pcie-rkep-\* 均不存在,rknn3_transfer_proxy 只在 18898 空转;
-> - 结论:**后摩 LLM 部署不需要 rknn3**。它是平行存在的 rknn 模型通路
->   (本板 QA 演示用:Qwen2.5-3B.rknn、rknn3_model_test;芯片 SKU 对应关系以平台资料为准)。
+> **定论(2026-11-10,用户确认 + 实测)**:rknn3 是 rknn 模型通路(rk1828 方向:
+> pcie-rkep 驱动 + rknn3_rk1820.img 固件)的运行时,**后摩栈完全不用它**。
+> - 实测:llama-server 及 libtcim_\* 全链 ldd 零 rknn 组件;
+> - 本板 pcie-rkep.ko 与 /dev/pcie-rkep-\* 均不存在,rknn3_transfer_proxy 只在 18898 空转;
+> - 板上的 rknn3 痕迹(rknn3-rk182x-m2 deb、rknn-smi、Qwen2.5-3B.rknn 演示)全是
+>   镜像和 QA 环境带进来的,新板部署**不装、不算步骤、不依赖**。
 
-如确需 rknn 演示/QA 通路再装:
+芯片状态/固件升级用 HM 自己的工具(位于 /usr/local/bin,推断随驱动安装器带入):
 
-```bash
-dpkg -i rknn3-rk182x-m2_1.1.0a_arm64.deb
-```
-
-postinst 自动执行:ldconfig;`systemctl enable rknn3.service rknn-mdns.service`;
-reload udev 规则(`75-rknn3-coprocessor.rules`,USB VID 2207:180b 热插拔触发脚本);
-尝试调 /usr/share/pcie-rkep-dkms/pcie-rkep-postinst(本板无此目录,静默跳过)。
-
-产物:`/usr/bin/` 下 rknn-smi、rknn-console、rknn3_llm_demo、rknn3_model_test、
-pcie_upgrade_tool 等;`librknn3_api.so`、gstreamer 插件 libgstrknn.so;
-`/usr/lib/firmware/rknn3_rk1820.img`;`/etc/profile.d/rknn3-env.sh`。
-rknn3_transfer_proxy 监听 127.0.0.1:18898。
-
-注意一个便利点:查后摩芯片状态的 `rknn-smi`(save.txt 快照即出自它)**来自这个 deb**。
-不装的话看芯片状态用 `dmesg | grep xh2a` 和 /dev/xh2a_\* 节点替代即可。
+- `hm_smi` —— 芯片状态快照(本板 save.txt 即其输出:HM_SMI_Version V1.0.0)
+- `hm_upgrade_cli` / `hm_upgrade_gui` —— 芯片固件升级(配 M50_DM2_fw 包)
 
 ## 5. 阶段四:部署 LLM 运行时(houmo-HLIELLama-xh2)
 
@@ -227,8 +185,8 @@ sudo bash install_llama-server.sh
 ```bash
 # 1. 驱动层
 lsmod | grep xh2a_drv && ls /dev/xh2a_ctl0
-# 2. 芯片层(rknn-smi 出自可选的 rknn3 deb;没装就看 dmesg + /dev/xh2a_*)
-rknn-smi || dmesg | grep -i "probed successfully"
+# 2. 芯片层(HM 自带 hm_smi;dmesg 兜底)
+hm_smi || dmesg | grep -i "probed successfully"
 # 3. 服务层
 ss -tlnp | grep -E "8081|17701"
 # 4. 推理功能(非流式,等完整回答)
@@ -250,7 +208,7 @@ curl -s 127.0.0.1:8081/v1/chat/completions -H 'Content-Type: application/json' \
 7. rc.local 是 `#!/bin/sh -e`:脚本任何一行非 0 退出会中断后续;firefly-hm-test.sh 是后台 `&` 所以不阻塞
 8. M50_DM2_fw 包是芯片侧固件(pcie_upgrade_tool 升级);rknn-smi 显示 HMSW V1.5.0 即已配套,别乱升 **[推断]**
 9. uboot/ATF 固件版本(cmdline 可见 fwver=ddr-v1.24,bl31-v1.56,bl32-v1.23)属镜像层,与后摩栈无关但换镜像时留意配套
-10. **rknn3 ≠ 后摩栈,别混为一谈**(2026-11-10 实测修正):llama-server 全链 ldd 零 rknn 依赖;rknn3_transfer_proxy 在 18898 跑着 ≠ LLM 在用它;后摩推理走 tcim→xh2a_drv 自己的通路
+10. **rknn3 与后摩毫无关系,部署时直接无视**(用户确认 + ldd 实测零依赖):rknn-smi/rknn3_transfer_proxy/Qwen2.5-3B.rknn 全是镜像与 QA 环境残留(rk1828/rknn 通路);后摩推理只走 tcim→xh2a_drv;芯片状态用 HM 自带 hm_smi,别去碰 rknn 系工具
 
 ## 10. 卸载/回退
 
@@ -296,9 +254,10 @@ llama-server 单模型模式不校验该名字,不影响运行。
 | 驱动源码 | /usr/src/xh2_driver-v1.5.0(DKMS 名 xh2_driver/v1.5.0) |
 | 驱动服务 | /etc/systemd/system/dkms_xh2a.service |
 | 驱动模块 | /lib/modules/\<内核\>/updates/dkms/xh2a_drv.ko |
-| 协处理器固件 | /usr/lib/firmware/rknn3_rk1820.img(rknn3 deb 提供) |
-| rknn3 工具/库 | /usr/bin/rknn-smi 等、librknn3_api.so(rknn3-rk182x-m2 deb 1.1.0a) |
-| 芯片状态基线 | /home/firefly/save.txt(rknn-smi 快照,PCIe 8GT/s x2,IPU 1300MHz) |
+| 协处理器固件 | /usr/lib/firmware/rknn3_rk1820.img(rknn3 deb 提供,**rknn 通路无关件**) |
+| rknn3 工具/库(**无关残留**) | /usr/bin/rknn-smi、rknn3_*、librknn3_api.so —— rk1828/rknn 通路,部署不碰 |
+| 芯片状态基线 | /home/firefly/save.txt(hm_smi 快照,PCIe 8GT/s x2,IPU 1300MHz) |
+| HM 工具 | /usr/local/bin/hm_smi、hm_upgrade_cli、hm_upgrade_gui |
 | 后摩 SDK 原始物料 | /root/(drv .run、M50 固件、Dadao docker、tcim runtime、examples) |
 | 内核 headers deb | /boot/linux-headers-6.12-arm64_arm64.deb |
 | rknn 演示模型(QA 用) | /home/firefly/Qwen2.5-3B.rknn + install.sh/md5sum.txt(升级卡脚本,另一套 rknn3 栈) |

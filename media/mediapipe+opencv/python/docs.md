@@ -88,6 +88,23 @@ python3 convert_rknn_pc.py hand_landmarks_detector.tflite
 # UI 替换宣传视频
 ui/promo.mp4
 
+# 设置开机自启动
+# 第一步
+mkdir -p ~/.config/autostart
+vim ~/.config/autostart/firefly-ui.desktop  # 写入下面的内容
+cat ~/.config/autostart/firefly-ui.desktop
+[Desktop Entry]
+Type=Application
+Name=Firefly Demo UI
+Exec=/bin/bash -c "while true; do /home/firefly/hand_gesture/mediapipe_env/bin/python /home/firefly/hand_gesture/python/ui/launcher.py; sleep 2; done"
+X-GNOME-Autostart-enabled=true
+
+chmod 644 ~/.config/autostart/firefly-ui.desktop
+gsettings set org.gnome.desktop.session idle-delay 0                    # 永不息屏
+gsettings set org.gnome.desktop.screensaver lock-enabled false          # 不锁屏
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'  
+reboot  # 验证开机自启动
+
 # 测试
 source /home/firefly/hand_gesture/mediapipe_env/bin/activate
 cd /home/firefly/hand_gesture/python/npu/

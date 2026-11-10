@@ -67,10 +67,11 @@ demo 的日志直接打印在启动器的终端里 (排查启动失败看这里)
 
 ```bash
 # 目录布局与仓库一致 (ui/ 与 npu/ gpu/ 平级), 整个 python/ 拷过去即可
-scp -r python/ firefly@<板子IP>:/home/firefly/hand_gesture/demo/
+# 路径以板端实际为准: 2026-11-10 实测板端代码在 /home/firefly/hand_gesture/python
+rsync -a --exclude '__pycache__' python/ firefly@<板子IP>:/home/firefly/hand_gesture/python/
 ssh firefly@<板子IP>
 source /home/firefly/hand_gesture/mediapipe_env/bin/activate
-cd /home/firefly/hand_gesture/demo
+cd /home/firefly/hand_gesture/python
 python3 ui/launcher.py
 ```
 
@@ -84,14 +85,37 @@ sudo apt install python3-pil fonts-noto-cjk
 
 ### 展会开机自启 (可选)
 
-创建 `~/.config/autostart/firefly-ui.desktop`:
+创建 `~/.config/autostart/firefly-ui.desktop`(**必须放在桌面登录用户的家目录下**——GDM 自动登录
+`firefly` 就放 `/home/firefly/.config/autostart/`, root 登录就放 `/root/.config/autostart/`,
+放错用户永远不会执行; 外面套 `while true`: 启动器崩溃/被退出后 2 秒自动拉起, 展台永远有画面):
 
 ```ini
 [Desktop Entry]
 Type=Application
 Name=Firefly Demo UI
-Exec=/home/firefly/hand_gesture/mediapipe_env/bin/python /home/firefly/hand_gesture/demo/ui/launcher.py
+Exec=/bin/bash -c "while true; do /home/firefly/hand_gesture/mediapipe_env/bin/python /home/firefly/hand_gesture/python/ui/launcher.py; sleep 2; done"
 X-GNOME-Autostart-enabled=true
+```
+
+现成文件就是仓库里的 `ui/firefly-ui.desktop`, scp 到板端 install 一下即可:
+
+```bash
+# 本机: scp ui/firefly-ui.desktop root@<板子IP>:/tmp/
+# 板端: (路径以板端 ls 为准, 先确认 launcher.py 真实位置)
+mkdir -p /home/firefly/.config/autostart
+install -o firefly -g firefly -m 644 /tmp/firefly-ui.desktop /home/firefly/.config/autostart/firefly-ui.desktop
+rm -f /root/.config/autostart/firefly-ui.desktop   # 之前误放到 root 家目录的删掉
+```
+
+配合开机免密进桌面(GDM): `/etc/gdm3/custom.conf` 的 `[daemon]` 段加
+`AutomaticLoginEnable=true` 和 `AutomaticLogin=firefly`。
+
+展会防息屏(否则放几分钟就黑屏):
+
+```bash
+gsettings set org.gnome.desktop.session idle-delay 0
+gsettings set org.gnome.desktop.screensaver lock-enabled false
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
 ```
 
 ## 文件结构

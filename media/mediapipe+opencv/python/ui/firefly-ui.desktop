@@ -1,0 +1,12 @@
+# Firefly RK3588 展会启动器 · 开机自启
+# 放置位置: 桌面登录用户的 ~/.config/autostart/ 下
+#   GDM 自动登录 firefly → /home/firefly/.config/autostart/firefly-ui.desktop (属主 firefly)
+#   root 登录桌面       → /root/.config/autostart/firefly-ui.desktop
+# 放错用户 = 永远不执行。
+# Exec 里的代码路径以板端实际为准:
+#   ls /home/firefly/hand_gesture/python/ui/launcher.py
+[Desktop Entry]
+Type=Application
+Name=Firefly Demo UI
+Exec=/bin/bash -c "while true; do /home/firefly/hand_gesture/mediapipe_env/bin/python /home/firefly/hand_gesture/python/ui/launcher.py; sleep 2; done"
+X-GNOME-Autostart-enabled=true
