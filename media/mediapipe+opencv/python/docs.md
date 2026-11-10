@@ -89,8 +89,29 @@ python3 convert_rknn_pc.py hand_landmarks_detector.tflite
 source /home/firefly/hand_gesture/mediapipe_env/bin/activate
 cd /home/firefly/hand_gesture/python/npu/
 python hand_control_npu.py       # 手势跟踪
+python hand_control_npu_roi.py
 python fixed_gesture_npu.py      # 手势数字识别
 python 4_models/gesture_pose_4_models.py   # 固定手势识别,gesture 的手势分类(7种:耶,握拳,张掌,食指向上,拇指向上,拇指向下,iloveyou)
+python 4_models/gesture_pose_4_models_roi.py
+
+# 效果如下:
+# python 4_models/gesture_pose_4_models.py
+[status] 27.8 fps | 抓图->识别 --ms | 识别->发送 --ms
+[status] 29.9 fps | 抓图->识别 --ms | 识别->发送 --ms
+[status] 30.0 fps | 抓图->识别 10ms | 识别->发送 1ms
+[status] 30.0 fps | 抓图->识别 10ms | 识别->发送 1ms
+[status] 30.0 fps | 抓图->识别 12ms | 识别->发送 1ms
+[status] 30.0 fps | 抓图->识别 11ms | 识别->发送 1ms
+[status] 30.1 fps | 抓图->识别 16ms | 识别->发送 1ms
+[status] 23.7 fps | 抓图->识别 27ms | 识别->发送 1ms
+
+# python hand_control_npu.py
+[status] 27.1 fps | 抓图->识别 17ms | 识别->发送 1ms
+[status] 29.1 fps | 抓图->识别 17ms | 识别->发送 1ms
+[status] 29.2 fps | 抓图->识别 17ms | 识别->发送 1ms
+[status] 29.5 fps | 抓图->识别 17ms | 识别->发送 1ms
+[status] 29.6 fps | 抓图->识别 17ms | 识别->发送 1ms
+[status] 29.3 fps | 抓图->识别 17ms | 识别->发送 1ms
 ```
 
 ### 1.2 python代码框架
