@@ -199,6 +199,8 @@ class HandNPU4:
         v = -d * pts[:, 0] + c * pts[:, 1]
         side = max(u.max() - u.min(), v.max() - v.min()) * TRACK_SCALE
         side = max(side, 56.0)                              # 防退化(手贴到镜头时包围盒过小)
+        side = min(side, 1.2 * max(self._track_shape))      # 上限: 手贴近镜头时21点包围盒可能比画面还大,
+                                                            # ROI超帧 -> 裁剪大半是黑边 -> landmark输出垃圾(幽灵手根源)
         um, vm = (u.max() + u.min()) / 2, (v.max() + v.min()) / 2
         # u,v是绕图像原点旋转的绝对坐标, 逆变换原点自动抵消: (x,y)=(c·u-d·v, d·u+c·v)
         # (不能加回(x0,y0): 那会把ROI中心位移整个腕向量, 裁剪跑出手外, 幻影坐标逐帧复合翻倍)
@@ -292,6 +294,27 @@ class HandNPU4:
         idx = int(fused.argmax())
         return (GESTURES[idx] if idx > 0 else None), float(fused[idx]), fused
 
+    def _track_plausible(self, res, prev, W, H):
+        """追踪路径解码结果合理性守卫(幽灵手防线): 旧守卫只拦>4倍帧尺寸/非有限值,
+        实测追踪ROI坏裁剪会输出"腕(1.51,1.90)出画但不夸张"的垃圾且flag照样>=0.5,
+        垃圾进缓存后下一帧ROI更歪 -> 幽灵手骨架持续. 三条硬规则(实测palm路径24帧全干净,
+        所以拒绝后同帧回退palm就能消掉幽灵):
+          1) 腕必须落在画面内;
+          2) 21点至少18个在画面±5%范围内(允许少量指尖出画, 手贴近镜头时常见);
+          3) 与上一帧的中位点位移 < 0.25×min(W,H) (30fps下手每帧移动有限,
+             静止手瞬间跳到画面外必然是垃圾). prev=上一帧缓存像素坐标(21,2),
+             注意必须在_run_landmark更新缓存之前取"""
+        px, py = res["px"], res["py"]
+        if not (0.0 <= float(px[0]) <= W and 0.0 <= float(py[0]) <= H):
+            return False
+        inside = ((px > -0.05 * W) & (px < 1.05 * W) & (py > -0.05 * H) & (py < 1.05 * H))
+        if int(inside.sum()) < 18:
+            return False
+        d = np.hypot(px - prev[:, 0], py - prev[:, 1])
+        if float(np.median(d)) > 0.25 * min(W, H):
+            return False
+        return True
+
     def detect(self, bgr):
         H, W = bgr.shape[:2]
         if self._track_shape != (H, W):                     # 帧尺寸变了, 追踪缓存作废
@@ -300,7 +323,10 @@ class HandNPU4:
         rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
         res, tracked = None, False
         if self._track_pts is not None:                     # 追踪优先: 3次推理(landmark+embedder+classifier)
-            res = self._run_landmark(rgb, self._roi_from_landmarks(self._track_pts))
+            prev = self._track_pts                          # 上一帧缓存(_run_landmark会更新它, 先存)
+            res = self._run_landmark(rgb, self._roi_from_landmarks(prev))
+            if res is not None and not self._track_plausible(res, prev, W, H):
+                res = None                                  # 解码"合法"但出画/跳变 -> 幽灵手, 判为追踪失败
             tracked = res is not None
             if res is None:
                 self._track_pts = None                      # 追踪失败, 同帧回退palm全流程

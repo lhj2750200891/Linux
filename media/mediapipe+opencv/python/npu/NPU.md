@@ -237,3 +237,7 @@ rk.export_rknn(out_path)                   # 先导出!
 | RKNN 加载失败 | librknnrt 与 pip 包版本不齐 |
 | 框数与 2016 不一致报错 | `.rknn` 不是 convert_rknn_pc.py 的产物 |
 | 关键点抖动比 GPU 版大 | 转换误开了量化 |
+
+
+
+![image-20261110090100389](/home/lhj/.config/Typora/typora-user-images/image-20261110090100389.png)
