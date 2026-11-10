@@ -85,6 +85,12 @@ python3 convert_rknn_pc.py hand_detector.tflite
 python3 convert_rknn_pc.py hand_landmarks_detector.tflite
 # 转换后的rknn模型,传输到板端,然后在python文件中调用即可
 
+# 测试
+source /home/firefly/hand_gesture/mediapipe_env/bin/activate
+cd /home/firefly/hand_gesture/python/npu/
+python hand_control_npu.py       # 手势跟踪
+python fixed_gesture_npu.py      # 手势数字识别
+python 4_models/gesture_pose_4_models.py   # 固定手势识别,gesture 的手势分类(7种:耶,握拳,张掌,食指向上,拇指向上,拇指向下,iloveyou)
 ```
 
 ### 1.2 python代码框架

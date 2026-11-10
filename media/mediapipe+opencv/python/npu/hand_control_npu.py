@@ -28,7 +28,7 @@ import cv2, numpy as np
 SERIAL_PORT_DEFAULT = "/dev/ttyACM0"
 BAUD     = 1000000
 SEND_HZ  = 25      # 串口下发频率
-MAX_STEP = 32      # 每帧每路最大位移, 25Hz≈800单位/秒(与官方demo插值速度相当), 防撞击
+MAX_STEP = 64      # 每帧每路最大位移, 25Hz≈1600单位/秒(2026-11-10应用户要求提速, 与gesture_pose_4_models.py同速)
 DEADBAND = 3       # 每路变化小于此值不发帧, 减少总线流量
 # 硬性安全区间: 官方demo实际用到的范围再各留余量. 超范围值发送前被强制截断
 #               1=小拇指      2=无名指      3=中指       4=食指       5=大拇指      6=拇指根部
@@ -107,6 +107,7 @@ class CyberHand:
         self.cur = self._read_all()          # 从真实位置出发
         self.tgt = dict(self.cur)
         self.t_src, self.lat = None, 0.0     # t_src=当前目标来源帧的抓取时刻; lat=抓图->实发耗时(平滑值)
+        self.t_det, self.lat_gap = None, 0.0 # t_det=同帧识别结束时刻; lat_gap=识别结束->实发(同源恒>=0)
     def _read_all(self):
         cur = {}
         for sid in sorted(SAFE_RANGE):       # 逐个读真实位置, 失败用初始位兜底
@@ -140,9 +141,14 @@ class CyberHand:
         if moved:
             self.ser.write(sync_write_frame(self.cur))   # 同步写广播无应答
             if self.t_src is not None:                   # 只测决策后第一次实发(反应时间), 追动不重复计
-                dt = time.time() - self.t_src
+                now_ = time.time()
+                dt = now_ - self.t_src
                 self.lat = dt if self.lat <= 0 else self.lat * 0.7 + dt * 0.3
+                if self.t_det is not None:               # 同帧的识别结束->实发: 与lat同源, 无负值假象
+                    dg = now_ - self.t_det
+                    self.lat_gap = dg if self.lat_gap <= 0 else self.lat_gap * 0.7 + dg * 0.3
                 self.t_src = None                        # 一次性: 用后作废, 下次set_target再武装
+                self.t_det = None
             if self.ser.in_waiting:
                 self.ser.reset_input_buffer()            # 清理杂散字节防缓冲膨胀
     def move_to_init(self, timeout=2.0):
@@ -256,6 +262,8 @@ ts, fps, n, t_last = 0, 0.0, 0, time.time()
 next_send, t_report = 0.0, time.time()
 pos = None                                                # 最近一次映射位置(状态行用)
 t_grab = 0.0                                              # 本帧抓取时刻(抓图->发送耗时的起算点)
+dec_lat = 0.0                                             # 抓图->识别耗时(EMA平滑, 与gesture_pose同款)
+t_det_end = 0.0                                           # 本帧识别结束时刻(识别->发送耗时的同源基准)
 last_img, prev_state = None, None                         # paused时定格显示的帧
 try:
     while True:
@@ -274,10 +282,14 @@ try:
             if STATE == "running":             # idle只预览画面, 不跑推理省NPU
                 ts += 33
                 lm = landmarker.detect(img, ts)   # NPU推理: 返回21点/None(与mediapipe同格式)
+                t_det_end = time.time()
+                dec = t_det_end - t_grab
+                dec_lat = dec if dec_lat <= 0 else dec_lat * 0.7 + dec * 0.3   # 抓图->识别耗时(EMA平滑)
                 if lm:
                     pos = retarget_pos(lm)
                     if hand is not None:
                         hand.t_src = t_grab    # 记录本目标来自哪次抓图
+                        hand.t_det = t_det_end # 同帧识别结束时刻(发送耗时与之同源)
                         hand.set_target(pos)   # 只更新目标, 实发由下面限速tick逼近
                     h, w = img.shape[:2]
                     pts = [(int(p[0]*w), int(p[1]*h)) for p in lm]
@@ -295,11 +307,12 @@ try:
             fps = fps * 0.5 + (n / (now - t_last)) * 0.5
             n, t_last = 0, now
         if now - t_report >= 5.0:
-            if hand is None:                   # dry-run: 没有串口实发, 只报fps
-                print(f"[status] {fps:.1f} fps", flush=True)
+            dec = f"{dec_lat*1000:.0f}ms" if dec_lat > 0 else "--ms"   # 首次识别前没有样本
+            if hand is None:                   # dry-run: 没有串口实发
+                print(f"[status] {fps:.1f} fps | 抓图->识别 {dec}", flush=True)
             else:
-                lat = f"{hand.lat*1000:.0f}ms" if hand.lat > 0 else "--ms"   # 首次实发前没有样本
-                print(f"[status] {fps:.1f} fps | 抓图->发送 {lat}", flush=True)
+                gap = f"{hand.lat_gap*1000:.0f}ms" if hand.lat_gap > 0 else "--ms"   # 首次实发前没有样本
+                print(f"[status] {fps:.1f} fps | 抓图->识别 {dec} | 识别->发送 {gap}", flush=True)
             t_report = now
         bw = (img.shape[0] * SW - img.shape[1] * SH) // (2 * SH)   # 补黑边到屏幕比例, 画面不变形
         if bw > 0:
