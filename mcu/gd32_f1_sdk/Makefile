@@ -153,7 +153,7 @@ DT_HEADER   = $(GEN_DIR)/devicetree_generated.h
 MCU_SERIES  = GD32F10x
 MCU_CPU     = cortex-m3
 
-COMPILER    = /usr/local/arm/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
+COMPILER    = $(ROOT_DIR)/prebuilts/gcc/linux-x86/arm/arm-gnu-toolchain-15.2.rel1-x86_64-arm-none-eabi/bin/arm-none-eabi-
 CC          = $(COMPILER)gcc
 AS          = $(COMPILER)gcc
 LD          = $(COMPILER)gcc
