@@ -1,0 +1,89 @@
+#!/bin/sh
+# postinst — 自包含安装, 全新无环境设备可直接装:
+#   1. 解释器: 系统 python3.10 优先(与 docs.md 一致), 没有则用包内便携版
+#      /opt/hand-gesture-demo/cpython (python-build-standalone, aarch64 自带全部依赖)
+#   2. venv 缺失时创建; 依赖用包内 wheel 离线安装(--no-index),
+#      离线失败才回退 pip 联网(仅此一步允许联网)
+#   3. 注册 hand-gesture-ui.service 开机自启动
+set -e
+
+APP_HOME=/home/firefly/hand_gesture
+VENV="$APP_HOME/mediapipe_env"
+BASE=/opt/hand-gesture-demo
+WHEELS="$BASE/wheels"
+CPYTHON="$BASE/cpython/bin/python3.10"
+SERVICE=hand-gesture-ui.service
+PINS="numpy==2.2.6 opencv-python==5.0.0.93 pyserial==3.5 pillow==12.3.0 psutil==7.2.2 ruamel.yaml==0.18.17 ruamel.yaml.clib==0.2.15 rknn-toolkit-lite2==2.3.2"
+
+case "$1" in
+    configure)
+        # ---- 1. 选解释器: 系统 python3.10 优先, 其次包内便携版 ----
+        if command -v python3.10 >/dev/null 2>&1; then
+            PY=python3.10
+        elif [ -x "$CPYTHON" ]; then
+            PY="$CPYTHON"
+        else
+            echo "E: 系统没有 python3.10, 包内便携版也缺失 ($CPYTHON)" >&2
+            exit 1
+        fi
+        echo ">>> 使用解释器: $PY"
+
+        # ---- 2. 虚拟环境: 已存在则沿用; 缺失则创建 (系统版建不了就用便携版兜底) ----
+        if [ -x "$VENV/bin/python" ]; then
+            echo ">>> 已有虚拟环境 $VENV, 沿用"
+        else
+            echo ">>> 创建虚拟环境 $VENV"
+            rm -rf "$VENV"
+            if ! "$PY" -m venv "$VENV" 2>/dev/null; then
+                echo ">>> 系统 python3.10 建 venv 失败(缺 venv 模块?), 改用包内便携版"
+                rm -rf "$VENV"
+                if [ ! -x "$CPYTHON" ]; then
+                    echo "E: 便携版解释器不存在, 无法创建虚拟环境" >&2
+                    exit 1
+                fi
+                "$CPYTHON" -m venv "$VENV"
+            fi
+            touch "$VENV/.created-by-hand-gesture-demo"
+        fi
+
+        # ---- 3. 依赖: 齐了就不动环境; 缺了先离线装(包内 wheel), 失败才 pip 联网 ----
+        if "$VENV/bin/python" -c "import cv2, numpy, serial, PIL" 2>/dev/null \
+           && "$VENV/bin/python" -c "from rknnlite.api import RKNNLite" 2>/dev/null; then
+            echo ">>> 依赖齐全, 跳过安装"
+        else
+            echo ">>> 离线安装依赖 (包内 wheel: $WHEELS)..."
+            if ! "$VENV/bin/pip" install --no-index --find-links "$WHEELS" $PINS; then
+                echo ">>> 离线安装失败, 回退 pip 联网 (阿里云镜像)..."
+                "$VENV/bin/pip" install -i https://mirrors.aliyun.com/pypi/simple/ $PINS
+            fi
+            "$VENV/bin/python" -c "from rknnlite.api import RKNNLite" \
+                || echo "W: rknnlite 导入失败, 请检查 /usr/lib/librknnrt.so (Firefly 固件自带)" >&2
+        fi
+        [ -e /usr/lib/librknnrt.so ] || echo "W: /usr/lib/librknnrt.so 不存在, NPU 推理会失败 (Firefly 官方固件自带)" >&2
+
+        # ---- 4. 目录属主交给 firefly (保证 __pycache__ 等可写) ----
+        if id firefly >/dev/null 2>&1; then
+            chown -R firefly:firefly "$APP_HOME" 2>/dev/null || true
+        fi
+
+        # ---- 5. 开机自启动: systemd 服务接管, 原 XDG autostart 方式改为备份避免双开 ----
+        for f in /home/firefly/.config/autostart/firefly-ui.desktop \
+                 /root/.config/autostart/firefly-ui.desktop; do
+            if [ -f "$f" ]; then
+                mv -f "$f" "$f.bak-by-hand-gesture-demo"
+                echo ">>> 原自启动 $f 已备份为 *.bak-by-hand-gesture-demo, 由 systemd 服务接管"
+            fi
+        done
+
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl daemon-reload || true
+            systemctl enable "$SERVICE" || true
+            systemctl restart "$SERVICE" \
+                || echo ">>> 服务已设为开机自启; 当前启动失败多为桌面会话未就绪, Restart=always 会自动重试"
+        fi
+
+        echo ">>> hand-gesture-demo 配置完成 (解释器: $PY)"
+        ;;
+esac
+
+exit 0

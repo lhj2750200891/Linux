@@ -1,0 +1,33 @@
+#!/bin/sh
+# postrm — 注销服务并还原原自启动备份。
+# purge 时: 若虚拟环境是本包创建的(有标记), 一并删除; 用户自建的(docs.md 步骤)绝不动。
+set -e
+SERVICE=hand-gesture-ui.service
+VENV=/home/firefly/hand_gesture/mediapipe_env
+
+case "$1" in
+    remove|purge)
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl disable "$SERVICE" 2>/dev/null || true
+            systemctl daemon-reload 2>/dev/null || true
+            systemctl reset-failed "$SERVICE" 2>/dev/null || true
+        fi
+
+        # 恢复原 XDG 自启动备份 (回到安装前状态)
+        for f in /home/firefly/.config/autostart/firefly-ui.desktop.bak-by-hand-gesture-demo \
+                 /root/.config/autostart/firefly-ui.desktop.bak-by-hand-gesture-demo; do
+            if [ -f "$f" ]; then
+                mv -f "$f" "${f%.bak-by-hand-gesture-demo}"
+            fi
+        done
+        ;;
+esac
+
+if [ "$1" = purge ]; then
+    if [ -f "$VENV/.created-by-hand-gesture-demo" ]; then
+        rm -rf "$VENV"
+        echo "已删除由本包创建的虚拟环境 $VENV"
+    fi
+fi
+
+exit 0

@@ -1,0 +1,16 @@
+#!/bin/sh
+# prerm — 卸载/升级前停掉服务
+set -e
+SERVICE=hand-gesture-ui.service
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        if command -v systemctl >/dev/null 2>&1; then
+            systemctl stop "$SERVICE" 2>/dev/null || true
+        fi
+        # 结束可能残留的启动器进程 (原 .desktop 的 while-true 循环已不在, 服务停止即退出)
+        pkill -f "python/ui/launcher.py" 2>/dev/null || true
+        ;;
+esac
+
+exit 0

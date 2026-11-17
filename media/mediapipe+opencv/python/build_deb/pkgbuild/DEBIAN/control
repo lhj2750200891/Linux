@@ -1,0 +1,13 @@
+Package: hand-gesture-demo
+Version: 1.1.1
+Section: utils
+Priority: optional
+Architecture: arm64
+Maintainer: lhj <lhj@localhost>
+Installed-Size: 168168
+Description: Firefly RK3588 手势识别 Demo (NPU 双模型/4模型, 全新设备自包含安装)
+ 包内自带便携版 CPython3.10(aarch64) 与全部依赖 wheel: 全新无环境设备
+ 直接安装, 不依赖 apt 联网; venv 缺失时自动创建, 依赖优先离线安装,
+ 失败才允许 pip 联网兜底. 设备上已有 python3.10/venv 时沿用不覆盖.
+ 含 python/npu 双模型与 4 模型 demo 及 ui/launcher.py, 注册
+ hand-gesture-ui.service 开机自启动.

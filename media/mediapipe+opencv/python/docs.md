@@ -177,7 +177,51 @@ python single_demo.py
 代码:
 
 ```
+识别算法都在python/npu目录下,这里不贴出来了
+```
 
+### 1.4 deb包构建
+
+```
+# 1.文件准备
+.
+├── build.sh                 # 打包deb文件脚本
+├── pkgbuild                 # 系统目录
+│   ├── home
+│   │   ├── firefly
+│   │   │   ├── hand_gesture
+│   │   │   │   ├── python
+│   │   │   │   │   ├── npu     # 增删文件直接在这里进行即可
+│   │   │   │   │   ├── ui      # 增删文件直接在这里进行即可
+│   ├── opt
+│   │   ├── hand-gesture-demo
+│   │   │   ├── cpython   # 兜底python3.10解释器
+│   │   │   ├── wheels    # 离线搭建环境的环境包
+│   │   │   │   ├── numpy-2.2.6-cp310-cp310-xxx.whl
+│   │   │   │   ├── opencv_python-5.0.0.93-cp37-xxx.whl
+│   │   │   │   ├── pillow-12.3.0-cp310-cp310-xxx.whl
+│   │   │   │   ├── psutil-7.2.2-cp36-xxx.whl
+│   │   │   │   ├── pyserial-3.5-xxx.whl
+│   │   │   │   ├── rknn_toolkit_lite2-2.3.2-cp310-cp310-xxx.whl
+│   │   │   │   ├── ruamel_yaml-0.18.17-py3-xxx.whl
+│   │   │   │   ├── ruamel_yaml_clib-0.2.15-cp310-cp310
+│   ├── DEBIAN
+│   │   ├── control   # 修改版本和说明
+│   │   ├── postinst  # 安装脚本
+│   │   ├── postrm    # 注销服务并还原原自启动备份
+│   │   ├── prerm    # 卸载
+
+# 2.构建
+bash build.sh   # 得到deb包
+
+# 安装
+sudo dpkg -i hand-gesture-demo_1.1.1_arm64.deb 
+
+# 卸载
+sudo apt remove hand-gesture-demo
+sudo apt purge hand-gesture-demo
+rm -r hand_gesture/
+rm hand-gesture-demo_1.1.0_arm64.deb
 ```
 
 
