@@ -3,62 +3,113 @@
 ## 1. SDK 获取与编译
 
 ```
-# 我这里是firefly的android 14,在百度网盘下载的
-cd /media/lhj/windows/code/arm64/rockchip/rockchip_android_sdk
-ls # 输出如下:
-android_sdk_delivery.tar.gz.part00  android_sdk_delivery.tar.gz.part05
-android_sdk_delivery.tar.gz.part01  android_sdk_delivery.tar.gz.part06
-android_sdk_delivery.tar.gz.part02  android_sdk_delivery.tar.gz.part07
-android_sdk_delivery.tar.gz.part03  android_sdk_delivery.tar.gz.part08
-android_sdk_delivery.tar.gz.part04
-
-# 先合并压缩包并检验
-cat android_sdk_delivery.tar.gz.part* &gt; android_sdk_delivery.tar.gz
-或者
-nohup sh -c 'cat android_sdk_delivery.tar.gz.part* > android_sdk_delivery.tar.gz' > merge.log 2>&1 &
-watch -n 5 'ls -lh android_sdk_delivery.tar.gz merge.log'   # 用于监控是否在变化
-md5sum android_sdk_delivery.tar.gz   # 检验值应该为: 14e23c298e79ed8b83ac82bd76ada530
-
-# 解压
-tar -vxf android_sdk_delivery.tar.gz  
-
-# 编译aic ()
-cd android_sdk
+# 下载源码包,我是从ftp中下载下来的
+# 如果下载下来的是7z.001-011,则直接使用md5sum -c MD5.txt进行校验
+# 如果下载下来的是一个zip压缩包,解压后校验: unzip firefly_rk3588_android14_git_240822.zip
+cd firefly_rk3588_android14_git_240822/
+md5sum -c MD5.txt    # 每个包都是ok即可
+7z x ./firefly_rk3588_android14_git_240822.7z.001 -oRK3588_Android14.0    # 解压
+cd ./RK3588_Android14.0
+git reset --hard
 source build/envsetup.sh
-cat device/rockchip/rk3588/AndroidProducts.mk 
-source build/envsetup.sh && lunch rk3588_aic-userdebug
-env ALLOW_MISSING_DEPENDENCIES=true ./build_aic.sh -K   # ① 先编内核（必须，生成 kernel Image）
-env ALLOW_MISSING_DEPENDENCIES=true ./build_aic.sh -A   # ② 再编 android 容器固件
-# 产物：IMAGE/RK3588_AIC_ANDROID14_USERDEBUG_&lt;时间戳&gt;/IMAGES/container/
-
-# 编译 itx-3588j
-cd android_sdk
-source build/envsetup.sh
-lunch rk3588_firefly_itx_3588j-userdebug
+lunch rk3588_firefly_aio_3588q-userdebug
 cd u-boot
 ./make.sh rk3588
 cd ..
-./build.sh -KAu    # 编译出的update.img 可以直接烧录,产物在android_sdk/rockdev/Image-rk3588_firefly_itx_3588j中
+./build.sh -KAu 
 
-# 烧录
-reboot loader
-fastboot flash super /home/lhj/super.img
-sudo upgrade_tool uf /home/lhj/update.img
-
-# 编译
-./FFTools/make.sh -d rk3588-firefly-itx-3588j -j$(nproc) -l rk3588_firefly_itx_3588j-userdebug
-./FFTools/mkupdate/mkupdate.sh -l rk3588_firefly_itx_3588j-userdebug   # 打包update.img
+# 如果不采用先编译UBOOT的方式,需要改rk3588下的mk文件
+ vim device/rockchip/rk3588/BoardConfig.mk
+ /PRODUCT_UBOOT_CONFIG   # 找到这个变量,改为
+ rk3588_defconfig   # 原来是rk3588.需要改为 rk3588_defconfig
+ ./build.sh -AUCKu -J$(nproc)
 ```
 
 
 
-## 2. Android 与 Linux 异同对比
+## 2. 新增 itx-3588j 板型
+
+编译阶段不要使用root,一定使用普通用户编译
+
+```
+# 前提:当前在 SDK 根目录(服务器 RK3588_Android14.0)
+
+# 1. device 产品目录:拷 aio 改名 
+cd device/rockchip/rk3588
+cp -r rk3588_firefly_aio_3588q rk3588_firefly_itx_3588j
+cd rk3588_firefly_itx_3588j
+
+# 目录内只有 2 个文件内容含 aio_3588q(下划线),先全局替换
+sed -i 's/aio_3588q/itx_3588j/g' BoardConfig.mk rk3588_firefly_aio_3588q.mk
+# 文件名跟上改
+mv rk3588_firefly_aio_3588q.mk rk3588_firefly_itx_3588j.mk
+mv init.rk3588_firefly_aio_3588q.rc init.rk3588_firefly_itx_3588j.rc
+
+# BoardConfig.mk:dts 名是连字符 aio-3588q,上面的下划线替换覆盖不到,单独替换
+sed -i 's/rk3588-firefly-aio-3588q/rk3588-firefly-itx-3588j/g' BoardConfig.mk
+
+# itx 的 mk:改 model/名称,删 HDMI-IN(ITX 无视频输入)
+sed -i 's/AIO-3588Q/ITX-3588J/g' rk3588_firefly_itx_3588j.mk
+sed -i 's/PRODUCT_FIREFLY_NAME := HDMI/PRODUCT_FIREFLY_NAME := ITX/' rk3588_firefly_itx_3588j.mk
+sed -i '/BOARD_HDMI_IN_SUPPORT := true/d; /CAMERA_SUPPORT_HDMI := true/d; /PRODUCT_PACKAGES += rkCamera2/d' rk3588_firefly_itx_3588j.mk
+
+# 检查无残留(应无输出;有则按上下文改掉)
+grep -rni "aio" .
+
+#  2. kernel dts (最好去掉多余的模块,否则会导致无法进入系统)
+cd ../../../../kernel-6.1/arch/arm64/boot/dts/rockchip
+cp rk3588-firefly-aio-3588q.dts  rk3588-firefly-itx-3588j.dts
+cp rk3588-firefly-aio-3588q.dtsi rk3588-firefly-itx-3588j.dtsi
+sed -i 's/rk3588-firefly-aio-3588q/rk3588-firefly-itx-3588j/g' rk3588-firefly-itx-3588j.dts rk3588-firefly-itx-3588j.dtsi
+
+# dts:注释掉摄像头 include(ITX 先不带 cam),改 model
+sed -i 's|^#include "rk3588-firefly-aio-cam|// #include "rk3588-firefly-aio-cam|' rk3588-firefly-itx-3588j.dts
+sed -i 's/Firefly AIO-3588Q HDMI(Android)/Firefly ITX-3588J(Android)/' rk3588-firefly-itx-3588j.dts
+
+#  3. 注册 dtb 
+echo 'dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-firefly-itx-3588j.dtb' >> kernel-6.1/arch/arm64/boot/dts/rockchip/Makefile
+# (本树 aio 未注册也能编,加上保险,防 make dtbs 缺)
+
+# ---------- 4. 注册 lunch ----------
+# vim device/rockchip/rk3588/AndroidProducts.mk
+#   产品列表(aio_mipi 那行后)加:
+#       $(LOCAL_DIR)/rk3588_firefly_itx_3588j/rk3588_firefly_itx_3588j.mk \
+#   COMMON_LUNCH_CHOICES(aio_mipi 条目后)加:
+#       rk3588_firefly_itx_3588j-userdebug \
+#       rk3588_firefly_itx_3588j-user \
+
+# ---------- 5. 编译 ----------
+cd /回到/SDK/根目录
+rm -rf out    # 换产品必须清 out(见坑3)
+source build/envsetup.sh
+lunch rk3588_firefly_itx_3588j-userdebug
+./build.sh -AUCKu -d rk3588-firefly-itx-3588j -J$(nproc)
+make recoveryimage -j$(nproc)     # 改了 dts/内核后 recovery 必须重编
+# 产物:rockdev/Image-rk3588_firefly_itx_3588j/
+
+# 烧录
+scp rockdev/Image-rk3588_firefly_itx_3588j/update.img lhj@172.16.10.222:/home/lhj
+scp rockdev/Image-rk3588_firefly_itx_3588j/boot.img lhj@172.16.10.222:/home/lhj
+scp rockdev/Image-rk3588_firefly_itx_3588j/misc.img lhj@172.16.10.222:/home/lhj
+scp out/target/product/rk3588_firefly_itx_3588j/recovery.img lhj@172.16.10.222:/home/lhj
+
+# —— 以下 upgrade_tool 在【本机】执行,板子先进 Loader(adb reboot loader 或按 Recovery 复位)——
+sudo upgrade_tool uf /home/lhj/update.img   
+sudo upgrade_tool di -r /home/lhj/recovery.img   
+sudo upgrade_tool di -m /home/lhj/misc.img
+
+/home/lhj/boot.img 单刷 boot 分区(日常改内核用)
+```
+
+
+
+## 3. Android 与 Linux 异同对比
 
 > 对照样本（均为只读分析结论，路径以实际机器为准）：
 > - Android14 SDK：`/media/lhj/windows/code/arm64/rockchip/rockchip_android_sdk/android_sdk`（Rockchip Android14，内核 `kernel-6.1` = **6.1.141**，目标板 `rk3588_firefly_itx_3588j`）
 > - Linux BSP SDK：`/media/lhj/data/t-chip/7.code/arm64/rockchip/rk3588_6.1.118_sdk`（Firefly Linux SDK，内核 **6.1.118**，同一板子有 `firefly_rk3588_itx-3588j_{buildroot,debian,ubuntu,openeuler}_defconfig`）
 
-### 2.1 总体定位对比
+### 3.1 总体定位对比
 
 | 维度 | Android14 SDK | Linux BSP SDK |
 |---|---|---|
@@ -71,7 +122,7 @@ sudo upgrade_tool uf /home/lhj/update.img
 | 调试通道 | adb、logcat、fastboot | ssh/串口 shell、dmesg/journalctl、`rkflash.sh` |
 | 软件升级 | recovery OTA / AB OTA（`build.sh -o`） | 整包 update.img、`bundle_update.sh` |
 
-### 2.2 相同点：底层 BSP 是同一套
+### 3.2 相同点：底层 BSP 是同一套
 
 1. **三件套同源**：u-boot、kernel、`rkbin/`（DDR loader、boot_merger 等）两边结构一致。RK3588 启动链都是 BootROM → MiniLoaderAll（DDR 初始化）→ uboot.img（内含 BL31/ATF）→ boot；`BOARD_ROCKCHIP_TRUST_MERGE_TO_UBOOT` 两侧等价（trust 并入 uboot，无独立 trust 镜像）。
 2. **内核开发流程完全一致**：改 `arch/arm64/boot/dts/rockchip/*.dts(i)`、menuconfig/defconfig 片段合并、驱动 `.ko`、打补丁——方法和工具链（clang/LLVM）两边通用。
@@ -81,7 +132,7 @@ sudo upgrade_tool uf /home/lhj/update.img
 
 > ⚠️ 注意：两棵树内核基线不同（**6.1.141 vs 6.1.118**），驱动补丁和 dts 片段**不能整文件互拷**，只能当参考，合入前需确认上下文冲突。
 
-### 2.3 关键差异
+### 3.3 关键差异
 
 | 方面 | Android14 | Linux BSP |
 |---|---|---|
@@ -97,15 +148,15 @@ sudo upgrade_tool uf /home/lhj/update.img
 
 **一句话总结**：内核/驱动/设备树这一层，Android BSP 和 Linux BSP 是同一份工作；Android 额外的成本全在用户态——HAL、SEPolicy、动态分区与 OTA 体系、Soong 构建规则；Linux BSP 额外的成本在 rootfs（Buildroot/Debian 定制）。
 
-## 3. Android14 开发步骤
+## 4. Android14 开发步骤
 
-### 3.1 环境准备
+### 4.1 环境准备
 
 - 编译主机：x86_64 Ubuntu（本机实测 Ubuntu 22.04 可用），磁盘 ≥ 250G（out/ 一套约 100G+，kernel/android 双份产物另计），内存越大越好（`-J96` 是按 96 线程跑的）。
 - 源码见第 1 节（分卷合并 → md5 校验 → 解压）。
 - Android 与 Linux 两个 SDK **不要共用 out 目录混编**（见第 4 节坑 3）。
 
-### 3.2 编译流程详解
+### 4.2 编译流程详解
 
 ```text
 # uboot 单独入口（原因见第 4 节坑 1）
@@ -137,7 +188,7 @@ device/rockchip/rk3588/rk3588_firefly_itx_3588j/dt-overlay.in                # d
 kernel-6.1/arch/arm64/boot/dts/rockchip/rk3588-firefly-itx-3588j.dts         # 设备树入口
 ```
 
-### 3.3 产物与烧录
+### 4.3 产物与烧录
 
 产物目录 `rockdev/Image-rk3588_firefly_itx_3588j/`：
 
@@ -160,7 +211,7 @@ upgrade_tool uf update.img
 - 包里没有 trust.img 也是正常的：RK3588 的 BL31 已合入 uboot.img（`BOARD_ROCKCHIP_TRUST_MERGE_TO_UBOOT := true`）。
 - 首次开机较慢（data 格式化、SELinux relabel、dexopt），默认 HDMI 输出 1920x1080。
 
-### 3.4 调试手段
+### 4.4 调试手段
 
 ```text
 adb devices / adb root / adb remount          # userdebug 可直接 root、可写 /
@@ -173,7 +224,7 @@ adb reboot bootloader                         # 进 fastboot
 
 底层问题仍然是串口第一优先：UART2、1500000 波特率。烧卡死/黑屏先看串口，再 `logcat | grep -E "avc|ServiceManager"` 查 SELinux/服务问题。
 
-### 3.5 典型开发任务 SOP
+### 4.5 典型开发任务 SOP
 
 **A. 内核层（与 Linux BSP 完全同法）**
 
@@ -217,7 +268,7 @@ adb reboot bootloader                         # 进 fastboot
 ./build.sh -p      # 版本留档：打包到 Image/ + 生成 patches
 ```
 
-### 3.6 同一任务的 Linux ↔ Android 对照表
+### 4.6 同一任务的 Linux ↔ Android 对照表
 
 | 任务 | Linux BSP SDK | Android14 SDK |
 |---|---|---|
@@ -228,13 +279,5 @@ adb reboot bootloader                         # 进 fastboot
 | 开机自启程序 | systemd unit / rcS | init.rc（`device/rockchip/.../*.rc`）或系统服务 |
 | 升级到新版本 | 重烧 update.img | OTA 包或整刷 |
 
-## 4. 常见问题与坑（实测记录）
 
-1. **`./build.sh -U` 编 uboot 报 `No rule to make target 'rk3588'`**：build.sh 内部执行 `make $UBOOT_CONFIG`（`rk3588`，无 `_defconfig` 后缀），这份 u-boot 没有该目标。绕过：先 `cd u-boot && ./make.sh rk3588 && cd -`，再 `./build.sh -KAu`（不带 -U）。改 `build.sh` 里为 `make ${UBOOT_DEFCONFIG}_defconfig` 也可。
-2. **mkimage 时提示 `u-boot/trust.img not fount!`**：预期行为。RK3588 方案是 BL31 合入 uboot.img，无独立 trust 镜像；parameter 里的 4M trust 分区烧后保持旧内容即可。
-3. **AIC（rk3588_aic）与标准产品（rk3588_firefly_itx_3588j）混编**：两者共用 `kernel-6.1`，内核 `.config`/boot 产物会互相覆盖；切换产品建议 `rm -rf out` 后再编，否则 soong 可能报诡异错误。需要同时维护两种固件就复制两棵树。
-4. **Android 编译日志里的 `Invalid sparse file format at header magic` ×8**：无害噪音，是组 super.img 时读取各分区 ext4 镜像的 sparse 头探测提示，后面紧跟 build completed 即正常。
-5. **选 itx 编内核报 `No rule to make target 'rockchip/rk3588-firefly-itx-3588j.dtb'`**：本交付包（AIC 版）把 firefly 系 dtb 从 `kernel-6.1/arch/arm64/boot/dts/rockchip/Makefile` 删掉了，需补回：
-   `dtb-$(CONFIG_ARCH_ROCKCHIP) += rk3588-firefly-itx-3588j.dtb`（MIPI 屏变体按需再加 `rk3588-firefly-itx-3588j-mipi*.dtb`）。
-6. **烧完黑屏排查顺序**：串口有没有 DDR init/uboot log → 有 uboot 没 kernel 看 boot 分区和 dts → 有内核没安卓看 logcat/SELinux avc。工具与升级失败分析见 SDK 内 `RKDocs/Rockchip_Firmware_Upgrade_Failed_Analyze_Method_CN.pdf`。
 
