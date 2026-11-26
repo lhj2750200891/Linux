@@ -27,7 +27,9 @@ cd ..
 
 
 
-## 2. 新增 itx-3588j 板型
+## 2. 新增板型
+
+### 2.1 itx-3588j
 
 编译阶段不要使用root,一定使用普通用户编译
 
@@ -99,6 +101,51 @@ sudo upgrade_tool di -r /home/lhj/recovery.img
 sudo upgrade_tool di -m /home/lhj/misc.img
 
 /home/lhj/boot.img 单刷 boot 分区(日常改内核用)
+```
+
+### 2.2 lga_3588l_mini
+
+```
+cd /home4/lhj/arm64/rockchip/rockchip_android_sdk/RK3588_Android14.0
+cd device/rockchip/rk3588
+cp -r rk3588_firefly_aio_3588q rk3588_firefly_lga_3588l_mini
+cd rk3588_firefly_lga_3588l_mini/
+mv rk3588_firefly_aio_3588q.mk rk3588_firefly_lga_3588l_mini.mk 
+mv init.rk3588_firefly_aio_3588q.rc init.rk3588_firefly_lga_3588l_mini.rc 
+vim BoardConfig.mk # 替换下面的内容
+	device/rockchip/rk3588/rk3588_firefly_aio_3588q/recovery.fstab_AB 改为
+	device/rockchip/rk3588/rk3588_firefly_lga_3588l_mini/recovery.fstab_AB
+	
+	PRODUCT_KERNEL_DTS := rk3588-firefly-aio-3588q 改为
+	PRODUCT_KERNEL_DTS := rk3588-firefly-lga-3588l-mini
+vim rk3588_firefly_lga_3588l_mini.mk  # 替换下面的内容
+	device/rockchip/rk3588/rk3588_firefly_aio_3588q/BoardConfig.mk 改为
+	device/rockchip/rk3588/rk3588_firefly_lga_3588l_mini/BoardConfig.mk
+	
+	PRODUCT_NAME := rk3588_firefly_aio_3588q 改为
+	PRODUCT_NAME := rk3588_firefly_lga_3588l_mini
+	
+	PRODUCT_DEVICE := rk3588_firefly_aio_3588q 改为
+	PRODUCT_DEVICE := rk3588_firefly_lga_3588l_mini
+	
+	PRODUCT_MODEL := AIO-3588Q 改为
+	PRODUCT_MODEL := LGA-3588L-MINI
+	
+	PRODUCT_COPY_FILES 中替换目录为lga_3588l_mini
+grep -rni "aio" .  # 没有输出即可
+
+cd /home4/lhj/arm64/rockchip/rockchip_android_sdk/RK3588_Android14.0/
+cd kernel-6.1/arch/arm64/boot/dts/rockchip/
+cp rk3588-firefly-aio-3588q.dts  rk3588-firefly-lga-3588l-mini.dts
+cp rk3588-firefly-aio-3588q.dtsi rk3588-firefly-lga-3588l-mini.dtsi
+vim rk3588-firefly-lga-3588l-mini.dts # 改为下面的内容
+	#include "rk3588-firefly-lga-3588l-mini.dtsi"
+	model = "Firefly LGA-3588L-MINI HDMI(Android)";
+	compatible = "rockchip,rk3588-firefly-lga-3588l-mini", "rockchip,rk3588";
+vim rk3588-firefly-lga-3588l-mini.dtsi   # 删除里面的所有内容,只保留hdmi和电源led即可
+
+cd /home4/lhj/arm64/rockchip/rockchip_android_sdk/RK3588_Android14.0/
+vim device/rockchip/rk3588/AndroidProducts.mk
 ```
 
 
