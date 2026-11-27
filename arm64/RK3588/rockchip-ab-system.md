@@ -2,7 +2,7 @@
 
 ## 1. 新建板级 AB defconfig
 
-### 1.1 新建 `$SDK/device/rockchip/.chips/rk3588/firefly_rk3588_lga-3588l-mini-ab_defconfig`
+### 1.1  firefly_rk3588_lga-3588l-mini-ab_defconfig文件
 
 ```
 RK_KERNEL_DTS_NAME="rk3588-firefly-lga-3588l-mini-duo-rk182x"
@@ -282,6 +282,7 @@ cp /media/lhj/data/t-chip/7.code/rootfs/debian13/debian/overlay-firefly/etc/udev
 mkdir -p chroot/ubuntu24/firefly/5_ab-system.overlay/etc/
 vim chroot/ubuntu24/firefly/5_ab-system.overlay/etc/fstab  # 写入下面的内容
 # OEM is optional so images without an OEM partition continue booting.
+/dev/root                  /          ext4
 /dev/disk/by-partlabel/oem /oem ext4 defaults,nofail,x-systemd.automount,x-systemd.device-timeout=1s 0 2
 /dev/disk/by-partlabel/userdata /userdata ext4 defaults,nofail 0 2
 
@@ -373,7 +374,7 @@ ConditionPathExists=!/var/lib/resize-done
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/resize-rootfs.sh
+ExecStart=/bin/bash /usr/local/sbin/resize-rootfs.sh
 ExecStartPost=/bin/touch /var/lib/resize-done
 RemainAfterExit=yes
 
@@ -459,19 +460,19 @@ cd /home4/lhj/arm64/rockchip/rk3588_6.12.69_sdk
 rm -f output/firmware/misc.img output/misc.img
 grep -E "RK_MISC" output/.config    # 不等于y就行
 
-# 生成 userdata.img
+# 生成 userdata.img (如果不存在就生成,存在就不用)
 truncate -s 64M output/firmware/userdata.img
 mkfs.ext4 -F -q output/firmware/userdata.img
 
-./build.sh rootfs
+./build.sh rootfs   # 换了根文件系统就要执行,不然指向的是旧的
 ls -l output/firmware/rootfs.img     # 指向 rootfs_ab.img
 ./build.sh firmware      # 尺寸检查,超 system_a 直接报错;同时产出 oem.img(rk1828-policy)
 ls -l output/firmware/oem.img               # 确认 oem.img 已生成
 ./build.sh updateimg                        # 产出 update-ab.img(全量,两槽同镜像,含 oem)
 ls -l output/firmware/update-ab.img         # 查看全量包
  
-# 定制OTA包(ota包中需要去掉oem分区)
-./build.sh edit-ota-package-file     # 弹出的编辑器中删除oem,misc,userdata三个分区
+# 定制OTA包(ota包中需要去掉分区: xxx_sdk/device/rockchip/.chips/rk3588/ota-package-file)
+./build.sh edit-ota-package-file # 弹出的编辑器中删除oem,misc,userdata三个分区,第一次需要
 ./build.sh ota-updateimg
 ls -l output/firmware/update-ota.img
 
@@ -534,9 +535,9 @@ updateEngine --misc=other --reboot # 手动切换测试
 
 ---
 
-## 14. 迭代流程
+## 10. 迭代流程
 
-### 14.1 只改 rootfs
+### 10.1 只改 rootfs
 
 ```bash
 cp /home4/lhj/debian_ab_rootfs.img /home4/lhj/arm64/rockchip/rk3588_6.12.69_sdk/prebuilt_rootfs/
@@ -546,14 +547,14 @@ cd /home4/lhj/arm64/rockchip/rk3588_6.12.69_sdk
 bash build.sh firmware updateimg     # 重新构建即可
 ```
 
-### 14.2 改了内核
+### 10.2 改了内核
 
 ```bash
 cd /home4/lhj/arm64/rockchip/rk3588_6.12.69_sdk
 bash build.sh kernel
 ```
 
-### 14.3 改了 oem 内容(rk1828-policy)
+### 10.3 改了 oem 内容(rk1828-policy)
 
 ```bash
 cd /home4/lhj/arm64/rockchip/rk3588_6.12.69_sdk
@@ -562,7 +563,7 @@ bash build.sh firmware updateimg
 sudo upgrade_tool wl 0x00CD8000 output/firmware/oem.img   # 偏移按你的分区表
 ```
 
-### 14.4 铁律
+### 10.4 铁律
 
 - 手工单独刷过 system_a 后,必须同法刷 system_b;
 - update-ota.img 不能当全量包烧;
@@ -571,7 +572,7 @@ sudo upgrade_tool wl 0x00CD8000 output/firmware/oem.img   # 偏移按你的分�
 
 ---
 
-## 15. 本文档对应的 SDK 关键文件(出问题时查)
+## 11. 本文档对应的 SDK 关键文件
 
 | 作用 | 文件 |
 |---|---|
@@ -589,3 +590,27 @@ sudo upgrade_tool wl 0x00CD8000 output/firmware/oem.img   # 偏移按你的分�
 | 升级引擎 | `external/recovery/`(`app/engine/`) |
 | 尺寸检查 | `device/rockchip/common/scripts/mk-firmware.sh` + `partition-helper` |
 | hm 栈部署对照 | `board/LGA-3588L-MINI/houmo-llm-deploy.md`(笔记目录) |
+
+
+
+## 12. AB系统原理梳理
+
+```
+├── oem
+│   ├── oem-installer.sh   # 根文件中的钩子用来调起这个脚本,这个脚本去执行子目录下的安装脚本
+│   ├── hand-gesture
+│   │   ├── hand-gesture-demo_1.1.1_arm64.deb
+│   │   └── installer.sh    # 子文件下的安装脚本
+│   └── rk1828-policy
+│       ├── firefly-temp-control_2.2.1_arm64.deb
+│       ├── firefly_temp_control_policy
+│       │   ├── AIBOX-PRO.policy
+│       │   ├── AIO-3588L-QUA-RK182X.policy
+│       │   └── LGA-3588L-MINI-DUO-RK182X.policy
+│       ├── houmo-installer-xh2-v1.5.0-aarch64-20261119.deb
+│       ├── README.md
+│       ├── RK182x-installer.sh   # 子文件下的安装脚本
+│       ├── rknn3-rk182x-m2_v1.2.0a1_arm64.deb
+│       └── rknn3-rk182x-sodimm_v1.2.0a1_arm64.deb
+```
+
